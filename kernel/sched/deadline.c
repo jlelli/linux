@@ -253,8 +253,7 @@ static void check_preempt_curr_dl(struct rq *rq, struct task_struct *p,
  * one, and to (try to!) reconcile itself with its own scheduling
  * parameters.
  */
-static inline void setup_new_dl_entity(struct sched_dl_entity *dl_se,
-				       struct sched_dl_entity *pi_se)
+static inline void setup_new_dl_entity(struct sched_dl_entity *dl_se)
 {
 	struct dl_rq *dl_rq = dl_rq_of_se(dl_se);
 	struct rq *rq = rq_of_dl_rq(dl_rq);
@@ -266,8 +265,8 @@ static inline void setup_new_dl_entity(struct sched_dl_entity *dl_se,
 	 * future; in fact, we must consider execution overheads (time
 	 * spent on hardirq context, etc.).
 	 */
-	dl_se->deadline = rq_clock(rq) + pi_se->dl_deadline;
-	dl_se->runtime = pi_se->dl_runtime;
+	dl_se->deadline = rq_clock(rq) + dl_se->dl_deadline;
+	dl_se->runtime = dl_se->dl_runtime;
 	dl_se->dl_new = 0;
 }
 
@@ -289,22 +288,10 @@ static inline void setup_new_dl_entity(struct sched_dl_entity *dl_se,
  * could happen are, typically, a entity voluntarily trying to overcome its
  * runtime, or it just underestimated it during sched_setscheduler_ex().
  */
-static void replenish_dl_entity(struct sched_dl_entity *dl_se,
-				struct sched_dl_entity *pi_se)
+static void replenish_dl_entity(struct sched_dl_entity *dl_se)
 {
 	struct dl_rq *dl_rq = dl_rq_of_se(dl_se);
 	struct rq *rq = rq_of_dl_rq(dl_rq);
-
-	BUG_ON(pi_se->dl_runtime <= 0);
-
-	/*
-	 * This could be the case for a !-dl task that is boosted.
-	 * Just go with full inherited parameters.
-	 */
-	if (dl_se->dl_deadline == 0) {
-		dl_se->deadline = rq_clock(rq) + pi_se->dl_deadline;
-		dl_se->runtime = pi_se->dl_runtime;
-	}
 
 	/*
 	 * We keep moving the deadline away until we get some
@@ -313,8 +300,8 @@ static void replenish_dl_entity(struct sched_dl_entity *dl_se,
 	 * arbitrary large.
 	 */
 	while (dl_se->runtime <= 0) {
-		dl_se->deadline += pi_se->dl_period;
-		dl_se->runtime += pi_se->dl_runtime;
+		dl_se->deadline += dl_se->dl_period;
+		dl_se->runtime += dl_se->dl_runtime;
 	}
 
 	/*
@@ -333,8 +320,8 @@ static void replenish_dl_entity(struct sched_dl_entity *dl_se,
 			lag_once = true;
 			printk_sched("sched: DL replenish lagged to much\n");
 		}
-		dl_se->deadline = rq_clock(rq) + pi_se->dl_deadline;
-		dl_se->runtime = pi_se->dl_runtime;
+		dl_se->deadline = rq_clock(rq) + dl_se->dl_deadline;
+		dl_se->runtime = dl_se->dl_runtime;
 	}
 }
 
@@ -362,8 +349,7 @@ static void replenish_dl_entity(struct sched_dl_entity *dl_se,
  * task with deadline equal to period this is the same of using
  * dl_deadline instead of dl_period in the equation above.
  */
-static bool dl_entity_overflow(struct sched_dl_entity *dl_se,
-			       struct sched_dl_entity *pi_se, u64 t)
+static bool dl_entity_overflow(struct sched_dl_entity *dl_se, u64 t)
 {
 	u64 left, right;
 
@@ -385,9 +371,9 @@ static bool dl_entity_overflow(struct sched_dl_entity *dl_se,
 	 * of anything below microseconds resolution is actually fiction
 	 * (but still we want to give the user that illusion >;).
 	 */
-	left = (pi_se->dl_period >> DL_SCALE) * (dl_se->runtime >> DL_SCALE);
+	left = (dl_se->dl_period >> DL_SCALE) * (dl_se->runtime >> DL_SCALE);
 	right = ((dl_se->deadline - t) >> DL_SCALE) *
-		(pi_se->dl_runtime >> DL_SCALE);
+		(dl_se->dl_runtime >> DL_SCALE);
 
 	return dl_time_before(right, left);
 }
@@ -401,8 +387,7 @@ static bool dl_entity_overflow(struct sched_dl_entity *dl_se,
  *  - using the remaining runtime with the current deadline would make
  *    the entity exceed its bandwidth.
  */
-static void update_dl_entity(struct sched_dl_entity *dl_se,
-			     struct sched_dl_entity *pi_se)
+static void update_dl_entity(struct sched_dl_entity *dl_se)
 {
 	struct dl_rq *dl_rq = dl_rq_of_se(dl_se);
 	struct rq *rq = rq_of_dl_rq(dl_rq);
@@ -412,14 +397,14 @@ static void update_dl_entity(struct sched_dl_entity *dl_se,
 	 * the actual scheduling parameters have to be "renewed".
 	 */
 	if (dl_se->dl_new) {
-		setup_new_dl_entity(dl_se, pi_se);
+		setup_new_dl_entity(dl_se);
 		return;
 	}
 
 	if (dl_time_before(dl_se->deadline, rq_clock(rq)) ||
-	    dl_entity_overflow(dl_se, pi_se, rq_clock(rq))) {
-		dl_se->deadline = rq_clock(rq) + pi_se->dl_deadline;
-		dl_se->runtime = pi_se->dl_runtime;
+	    dl_entity_overflow(dl_se, rq_clock(rq))) {
+		dl_se->deadline = rq_clock(rq) + dl_se->dl_deadline;
+		dl_se->runtime = dl_se->dl_runtime;
 	}
 }
 
@@ -433,7 +418,7 @@ static void update_dl_entity(struct sched_dl_entity *dl_se,
  * actually started or not (i.e., the replenishment instant is in
  * the future or in the past).
  */
-static int start_dl_timer(struct sched_dl_entity *dl_se, bool boosted)
+static int start_dl_timer(struct sched_dl_entity *dl_se)
 {
 	struct dl_rq *dl_rq = dl_rq_of_se(dl_se);
 	struct rq *rq = rq_of_dl_rq(dl_rq);
@@ -442,8 +427,6 @@ static int start_dl_timer(struct sched_dl_entity *dl_se, bool boosted)
 	unsigned long range;
 	s64 delta;
 
-	if (boosted)
-		return 0;
 	/*
 	 * We want the timer to fire at the deadline, but considering
 	 * that it is actually coming from rq->clock and not from
@@ -570,8 +553,14 @@ int dl_runtime_exceeded(struct rq *rq, struct sched_dl_entity *dl_se)
  */
 static void update_curr_dl(struct rq *rq)
 {
+	/*
+	 * curr could be proxied. Use proxy's parameters for runtime
+	 * management (IOW, proxy's scheduling entity is used to account
+	 * for proxied task execution).
+	 */
 	struct task_struct *curr = rq->curr;
-	struct sched_dl_entity *dl_se = &curr->dl;
+	struct task_struct *proxy = get_proxied_task(rq->curr);
+	struct sched_dl_entity *dl_se = &proxy->dl;
 	u64 delta_exec;
 
 	if (!dl_task(curr) || !on_dl_rq(dl_se))
@@ -602,8 +591,8 @@ static void update_curr_dl(struct rq *rq)
 
 	dl_se->runtime -= delta_exec;
 	if (dl_runtime_exceeded(rq, dl_se)) {
-		__dequeue_task_dl(rq, curr, 0);
-		if (likely(start_dl_timer(dl_se, curr->dl.dl_boosted)))
+		__dequeue_task_dl(rq, proxy, 0);
+		if (likely(start_dl_timer(dl_se)))
 			dl_se->dl_throttled = 1;
 		else
 			enqueue_task_dl(rq, curr, ENQUEUE_REPLENISH);
@@ -786,8 +775,7 @@ static void __dequeue_dl_entity(struct sched_dl_entity *dl_se)
 }
 
 static void
-enqueue_dl_entity(struct sched_dl_entity *dl_se,
-		  struct sched_dl_entity *pi_se, int flags)
+enqueue_dl_entity(struct sched_dl_entity *dl_se, int flags)
 {
 	BUG_ON(on_dl_rq(dl_se));
 
@@ -797,9 +785,9 @@ enqueue_dl_entity(struct sched_dl_entity *dl_se,
 	 * we want a replenishment of its runtime.
 	 */
 	if (!dl_se->dl_new && flags & ENQUEUE_REPLENISH)
-		replenish_dl_entity(dl_se, pi_se);
+		replenish_dl_entity(dl_se);
 	else
-		update_dl_entity(dl_se, pi_se);
+		update_dl_entity(dl_se);
 
 	__enqueue_dl_entity(dl_se);
 }
@@ -811,17 +799,13 @@ static void dequeue_dl_entity(struct sched_dl_entity *dl_se)
 
 static void enqueue_task_dl(struct rq *rq, struct task_struct *p, int flags)
 {
-	struct task_struct *pi_task = rt_mutex_get_top_task(p);
-	struct sched_dl_entity *pi_se = &p->dl;
-
 	/*
-	 * Use the scheduling parameters of the top pi-waiter
-	 * task if we have one and its (relative) deadline is
-	 * smaller than our one... OTW we keep our runtime and
-	 * deadline.
+	 * If p is being proxied we use the scheduling parameters of the
+	 * proxy, IOW we enqueue proxy's scheduling entity on dl_rq. OTW
+	 * we keep our runtime and deadline.
 	 */
-	if (pi_task && p->dl.dl_boosted && dl_prio(pi_task->normal_prio))
-		pi_se = &pi_task->dl;
+	struct task_struct *task = get_proxied_task(p);
+	struct sched_dl_entity *dl_se = &task->dl;
 
 	/*
 	 * If p is throttled, we do nothing. In fact, if it exhausted
@@ -829,13 +813,18 @@ static void enqueue_task_dl(struct rq *rq, struct task_struct *p, int flags)
 	 * its rq, the bandwidth timer callback (which clearly has not
 	 * run yet) will take care of this.
 	 */
-	if (p->dl.dl_throttled)
+	if (task->dl.dl_throttled)
 		return;
 
-	enqueue_dl_entity(&p->dl, pi_se, flags);
+	enqueue_dl_entity(dl_se, flags);
 
-	if (!task_current(rq, p) && p->nr_cpus_allowed > 1)
-		enqueue_pushable_dl_task(rq, p);
+	/*
+	 * If p is proxied we use proxy's properties to perform multi-
+	 * processors scheduling, but the task potentially executing
+	 * is still p.
+	 */
+	if (!task_current(rq, p) && task->nr_cpus_allowed > 1)
+		enqueue_pushable_dl_task(rq, task);
 }
 
 static void __dequeue_task_dl(struct rq *rq, struct task_struct *p, int flags)
@@ -846,8 +835,10 @@ static void __dequeue_task_dl(struct rq *rq, struct task_struct *p, int flags)
 
 static void dequeue_task_dl(struct rq *rq, struct task_struct *p, int flags)
 {
+	struct task_struct *task = get_proxied_task(p);
+
 	update_curr_dl(rq);
-	__dequeue_task_dl(rq, p, flags);
+	__dequeue_task_dl(rq, task, flags);
 }
 
 /*
@@ -1022,6 +1013,20 @@ static void put_prev_task_dl(struct rq *rq, struct task_struct *p)
 {
 	update_curr_dl(rq);
 
+	/*
+	 * If p, that is gonna be preempted, has some proxy spinning, pick
+	 * one and let it run p.
+	 */
+	if (task_has_proxies(p))
+		pick_task_proxy(p);
+
+	/*
+	 * TODO
+	 * p's original server could be pushed somewhere else after this
+	 * enqueue in the pushable tasks list, how we going to deal with
+	 * the fact that p's original server could start executing in some
+	 * other CPU? Do we have to check this beforehand?
+	 */
 	if (on_dl_rq(&p->dl) && p->nr_cpus_allowed > 1)
 		enqueue_pushable_dl_task(rq, p);
 }
