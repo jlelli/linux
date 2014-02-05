@@ -523,8 +523,14 @@ static int task_blocks_on_rt_mutex(struct rt_mutex *lock,
 
 	/* 
 	 * MBWI: task is added to owner's proxies list.
+	 * task becomes proxy only if it has a server (it is a -deadline
+	 * task).
+	 *
+	 * TODO what if task is !-deadline, but it has inherited from
+	 *      some -deadline task?
 	 */
-	set_proxy_execution(owner, task);
+	if (dl_task(task))
+		set_proxy_execution(owner, task);
 
 	/* Get the top priority waiter on the lock */
 	if (rt_mutex_has_waiters(lock))
@@ -604,7 +610,8 @@ static void wakeup_next_waiter(struct rt_mutex *lock)
 	 * after wake up (it was top_waiter); in case it is throttled, it will
 	 * execute using some other proxy's server.
 	 */
-	clear_proxy_execution(current, waiter->task);
+	if (task_is_proxied(current))
+		clear_proxy_execution(current, waiter->task);
 
 	raw_spin_unlock_irqrestore(&current->pi_lock, flags);
 
