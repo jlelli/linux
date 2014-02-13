@@ -389,10 +389,6 @@ static void replenish_dl_entity(struct sched_dl_entity *dl_se)
 		dl_se->deadline = rq_clock(rq) + dl_se->dl_deadline;
 		dl_se->runtime = dl_se->dl_runtime;
 	}
-
-	trace_printk("task %d's server (proxying %d) replenished\n",
-		     dl_task_of(dl_se)->pid,
-		     get_proxying(dl_task_of(dl_se))->pid);
 }
 
 /*
@@ -497,6 +493,8 @@ static int start_dl_timer(struct sched_dl_entity *dl_se)
 	unsigned long range;
 	s64 delta;
 
+	return 0;
+
 	/*
 	 * We want the timer to fire at the deadline, but considering
 	 * that it is actually coming from rq->clock and not from
@@ -547,8 +545,6 @@ static enum hrtimer_restart dl_task_timer(struct hrtimer *timer)
 	struct task_struct *p = dl_task_of(dl_se);
 	struct rq *rq = task_rq(p);
 	raw_spin_lock(&rq->lock);
-
-	trace_printk("task %d's se dl_task_timer fired\n", p->pid);
 
 	/*
 	 * We need to take care of a possible races here. In fact, the
@@ -663,33 +659,17 @@ static void update_curr_dl(struct rq *rq)
 
 	dl_se->runtime -= delta_exec;
 	if (dl_runtime_exceeded(rq, dl_se)) {
-		trace_printk("task %d's se exceeded its runtime ", proxy->pid);
-		if (task_is_proxied(curr)) {
-			trace_printk("while proxying %d\n", curr->pid);
-			trace_printk("deactivating %d's proxy %d (thottling)\n",
-			       curr->pid, proxy->pid);
+		if (task_is_proxied(curr))
 			proxy->on_rq = 0;
-		}
 		__dequeue_task_dl(rq, proxy, 0);
-		if (likely(start_dl_timer(dl_se))) {
-			trace_printk("replenishment timer started for task %d's"
-				     " server, proxying task %d\n", proxy->pid,
-				     curr->pid);
+		if (likely(start_dl_timer(dl_se)))
 			dl_se->dl_throttled = 1;
-		}
-		else {
-			trace_printk("replenishment timer not started for task %d's"
-				     " server, proxying task %d\n", proxy->pid,
-				     curr->pid);
+		else
 			enqueue_task_dl(rq, proxy, ENQUEUE_REPLENISH);
-		}
 
 		if (!is_leftmost(proxy, &rq->dl))
 			resched_task(proxy);
 	}
-
-	trace_printk("sched entity of task %d (rt %llu, dl %llu)\n",
-		     proxy->pid, dl_se->runtime, dl_se->deadline);
 
 	/*
 	 * Because -- for now -- we share the rt bandwidth, we need to
@@ -944,7 +924,7 @@ static void __dequeue_task_dl(struct rq *rq, struct task_struct *p, int flags)
 	 * We also set the busy_runtime to be equal to p's runtime at this
 	 * instant of time.
 	 */
-	if (task_is_proxying(p)) {
+	if (task_is_proxying(p) && !p->dl.dl_throttled) {
 		enqueue_proxy_dl_task(rq, p);
 		p->dl.busy_runtime = p->dl.runtime;
 	}	
@@ -1110,11 +1090,9 @@ struct task_struct *pick_next_task_dl(struct rq *rq)
 
 	p = dl_task_of(dl_se);
 	p->se.exec_start = rq_clock_task(rq);
-	trace_printk("task %d (proxying %d) runs (dl %llu)\n", p->pid,
-		     get_proxied_task(p)->pid, dl_se->deadline);
 
 	/* Running task will never be pushed. */
-       dequeue_pushable_dl_task(rq, p);
+	dequeue_pushable_dl_task(rq, p);
 
 #ifdef CONFIG_SCHED_HRTICK
 	if (hrtick_enabled(rq))
@@ -1141,8 +1119,6 @@ static void put_prev_task_dl(struct rq *rq, struct task_struct *p)
 	if (task_is_proxied(p)) {
 		struct task_struct *proxy = get_proxied_task(p);
 
-		trace_printk("deactivating %d's proxy %d (preempt)\n", p->pid,
-			proxy->pid);
 		deactivate_task(task_rq(proxy), proxy, 0);
 		proxy->on_rq = 0;
 		p->proxied_by = NULL;
@@ -1465,6 +1441,7 @@ retry:
 
 	deactivate_task(rq, next_task, 0);
 	set_task_cpu(next_task, later_rq->cpu);
+	next_task->dl.cpu = later_rq->cpu;
 	activate_task(later_rq, next_task, 0);
 
 	resched_task(later_rq->curr);
@@ -1551,6 +1528,7 @@ static int pull_dl_task(struct rq *this_rq)
 
 			deactivate_task(src_rq, p, 0);
 			set_task_cpu(p, this_cpu);
+			p->dl.cpu = this_cpu;
 			activate_task(this_rq, p, 0);
 			dmin = p->dl.deadline;
 
