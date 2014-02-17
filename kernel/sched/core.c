@@ -2911,34 +2911,7 @@ need_resched:
 		idle_balance(cpu, rq);
 
 	put_prev_task(rq, prev);
-proxy_retry:
 	next = pick_next_task(rq);
-	if (task_is_proxying(next)) {
-		struct task_struct *tp;
-
-		/*
-		 * next is proxying tp. If tp is sleeping we have to dequeue
-		 * all its proxies now, since we didn't do it when tp went to
-		 * sleep.
-		 */
-		tp = get_proxying(next);
-
-		//TODO move this up above
-		if (!tp->on_rq) {
-			deactivate_task(rq, next, DEQUEUE_SLEEP);
-			next->on_rq = 0;
-			goto proxy_retry;
-		}
-
-		/*
-		 * next has been selected for execution, but it is the current
-		 * proxy of tp. tp is run instead of next, but next's
-		 * parameters are used for actual scheduling (depending on the
-		 * scheduling class).
-		 */
-		if (task_is_proxied(tp) && next == get_proxied_task(tp))
-			next = tp;
-	}
 	clear_tsk_need_resched(prev);
 	clear_preempt_need_resched();
 	rq->skip_clock_update = 0;
