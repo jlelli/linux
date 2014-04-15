@@ -469,7 +469,7 @@ static int start_dl_timer(struct sched_dl_entity *dl_se, bool boosted)
 	unsigned long range;
 	s64 delta;
 
-	if (boosted)
+	if (boosted || (dl_se->flags & SCHED_FLAG_SOFT_RSV))
 		return 0;
 	/*
 	 * We want the timer to fire at the deadline, but considering
