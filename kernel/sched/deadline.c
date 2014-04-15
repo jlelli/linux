@@ -410,7 +410,13 @@ static bool dl_entity_overflow(struct sched_dl_entity *dl_se,
 	right = ((dl_se->deadline - t) >> DL_SCALE) *
 		(pi_se->dl_runtime >> DL_SCALE);
 
-	return dl_time_before(right, left);
+	if (dl_time_before(right, left)) {
+		dl_se->runtime = (pi_se->dl_bw * (dl_se->deadline - t)) >> 20;
+		if (dl_se->runtime < 10000LL)
+			return 1;
+	}
+
+	return 0;
 }
 
 /*
