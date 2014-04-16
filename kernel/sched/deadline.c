@@ -336,6 +336,8 @@ static void replenish_dl_entity(struct sched_dl_entity *dl_se,
 	while (dl_se->runtime <= 0) {
 		dl_se->deadline += pi_se->dl_period;
 		dl_se->runtime += pi_se->dl_runtime;
+		trace_printk("cbs replenish -> runtime = %lld, deadline = %llu",
+			     dl_se->runtime, dl_se->deadline);
 	}
 
 	/*
@@ -410,8 +412,10 @@ static bool dl_entity_overflow(struct sched_dl_entity *dl_se,
 	right = ((dl_se->deadline - t) >> DL_SCALE) *
 		(pi_se->dl_runtime >> DL_SCALE);
 
+	trace_printk("runtime = %lld", dl_se->runtime);
 	if (dl_time_before(right, left)) {
 		dl_se->runtime = (pi_se->dl_bw * (dl_se->deadline - t)) >> 20;
+		trace_printk("reduced runtime = %lld", dl_se->runtime);
 		if (dl_se->runtime < 10000LL)
 			return 1;
 	}
@@ -447,6 +451,8 @@ static void update_dl_entity(struct sched_dl_entity *dl_se,
 	    dl_entity_overflow(dl_se, pi_se, rq_clock(rq))) {
 		dl_se->deadline = rq_clock(rq) + pi_se->dl_deadline;
 		dl_se->runtime = pi_se->dl_runtime;
+		trace_printk("cbs check -> runtime = %lld, deadline = %llu",
+			     dl_se->runtime, dl_se->deadline);
 	}
 }
 
@@ -631,6 +637,8 @@ static void update_curr_dl(struct rq *rq)
 	sched_rt_avg_update(rq, delta_exec);
 
 	dl_se->runtime -= delta_exec;
+	trace_printk("cbs update -> runtime = %lld, deadline = %llu",
+		     dl_se->runtime, dl_se->deadline);
 	if (dl_runtime_exceeded(rq, dl_se)) {
 		__dequeue_task_dl(rq, curr, 0);
 		if (likely(start_dl_timer(dl_se, curr->dl.dl_boosted)))
