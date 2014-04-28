@@ -363,7 +363,8 @@ static noinline bool reduce_runtime(struct sched_dl_entity *dl_se,
 				struct sched_dl_entity *pi_se, u64 t)
 {
 	dl_se->runtime = (pi_se->dl_bw * (dl_se->deadline - t)) >> 20;
-	if (dl_se->runtime < 10000LL)
+	/* A runtime less than 1ms makes no sense */
+	if (dl_se->runtime < 1000000LL)
 		return 1;
 
 	return 0;
