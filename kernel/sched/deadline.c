@@ -221,6 +221,9 @@ static void task_non_contending(struct task_struct *p)
 	if (dl_se->dl_runtime == 0)
 		return;
 
+	if (unlikely(dl_entity_is_special(dl_se)))
+		return;
+
 	WARN_ON(hrtimer_active(&dl_se->inactive_timer));
 	WARN_ON(dl_se->dl_non_contending);
 
@@ -1148,6 +1151,9 @@ static void update_curr_dl(struct rq *rq)
 	cgroup_account_cputime(curr, delta_exec);
 
 	sched_rt_avg_update(rq, delta_exec);
+
+	if (unlikely(dl_entity_is_special(dl_se)))
+		return;
 
 	if (unlikely(dl_se->flags & SCHED_FLAG_RECLAIM))
 		delta_exec = grub_reclaim(delta_exec, rq, &curr->dl);
@@ -2436,6 +2442,9 @@ int sched_dl_overflow(struct task_struct *p, int policy,
 	u64 new_bw = dl_policy(policy) ? to_ratio(period, runtime) : 0;
 	int cpus, err = -1;
 
+	if (attr->sched_flags & SCHED_FLAG_SUGOV)
+		return 0;
+
 	/* !deadline task may carry old deadline bandwidth */
 	if (new_bw == p->dl.dl_bw && task_has_dl_policy(p))
 		return 0;
@@ -2522,6 +2531,10 @@ void __getparam_dl(struct task_struct *p, struct sched_attr *attr)
  */
 bool __checkparam_dl(const struct sched_attr *attr)
 {
+	/* special dl tasks don't actually use any parameter */
+	if (attr->sched_flags & SCHED_FLAG_SUGOV)
+		return true;
+
 	/* deadline != 0 */
 	if (attr->sched_deadline == 0)
 		return false;
