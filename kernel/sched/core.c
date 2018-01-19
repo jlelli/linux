@@ -4220,7 +4220,7 @@ change:
 			 * will also fail if there's no bandwidth available.
 			 */
 			if (!cpumask_subset(span, &p->cpus_allowed) ||
-			    rq->rd->dl_bw.bw == 0) {
+			    rq->rd->dl_bw.dl_bw == 0) {
 				task_rq_unlock(rq, p, &rf);
 				return -EPERM;
 			}

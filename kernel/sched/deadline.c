@@ -46,7 +46,7 @@ static inline int on_dl_rq(struct sched_dl_entity *dl_se)
 }
 
 #ifdef CONFIG_SMP
-static inline struct dl_bw *dl_bw_of(int i)
+static inline struct dl_bandwidth *dl_bw_of(int i)
 {
 	RCU_LOCKDEP_WARN(!rcu_read_lock_sched_held(),
 			 "sched RCU must be held");
@@ -66,7 +66,7 @@ static inline int dl_bw_cpus(int i)
 	return cpus;
 }
 #else
-static inline struct dl_bw *dl_bw_of(int i)
+static inline struct dl_bandwidth *dl_bw_of(int i)
 {
 	return &cpu_rq(i)->dl.dl_bw;
 }
@@ -275,14 +275,14 @@ static void task_non_contending(struct task_struct *p)
 		if (dl_task(p))
 			sub_running_bw(dl_se, dl_rq);
 		if (!dl_task(p) || p->state == TASK_DEAD) {
-			struct dl_bw *dl_b = dl_bw_of(task_cpu(p));
+			struct dl_bandwidth *dl_b = dl_bw_of(task_cpu(p));
 
 			if (p->state == TASK_DEAD)
 				sub_rq_bw(&p->dl, &rq->dl);
-			raw_spin_lock(&dl_b->lock);
+			raw_spin_lock(&dl_b->dl_runtime_lock);
 			__dl_sub(dl_b, p->dl.dl_bw, dl_bw_cpus(task_cpu(p)));
 			__dl_clear_params(p);
-			raw_spin_unlock(&dl_b->lock);
+			raw_spin_unlock(&dl_b->dl_runtime_lock);
 		}
 
 		return;
@@ -342,18 +342,11 @@ void init_dl_bandwidth(struct dl_bandwidth *dl_b, u64 period, u64 runtime)
 	raw_spin_lock_init(&dl_b->dl_runtime_lock);
 	dl_b->dl_period = period;
 	dl_b->dl_runtime = runtime;
-}
-
-void init_dl_bw(struct dl_bw *dl_b)
-{
-	raw_spin_lock_init(&dl_b->lock);
-	raw_spin_lock(&def_dl_bandwidth.dl_runtime_lock);
-	if (global_rt_runtime() == RUNTIME_INF)
-		dl_b->bw = -1;
+	if (runtime == RUNTIME_INF)
+		dl_b->dl_bw = -1;
 	else
-		dl_b->bw = to_ratio(global_rt_period(), global_rt_runtime());
-	raw_spin_unlock(&def_dl_bandwidth.dl_runtime_lock);
-	dl_b->total_bw = 0;
+		dl_b->dl_bw = to_ratio(period, runtime);
+	dl_b->dl_total_bw = 0;
 }
 
 void init_dl_rq(struct dl_rq *dl_rq)
@@ -368,7 +361,8 @@ void init_dl_rq(struct dl_rq *dl_rq)
 	dl_rq->overloaded = 0;
 	dl_rq->pushable_dl_tasks_root = RB_ROOT_CACHED;
 #else
-	init_dl_bw(&dl_rq->dl_bw);
+	init_dl_bandwidth(&dl_rq->dl_bw);
+	init_dl_bandwidth(&dl_rq->dl_bw, global_rt_period(), global_rt_runtime());
 #endif
 
 	dl_rq->running_bw = 0;
@@ -1262,7 +1256,7 @@ static enum hrtimer_restart inactive_task_timer(struct hrtimer *timer)
 	rq = task_rq_lock(p, &rf);
 
 	if (!dl_task(p) || p->state == TASK_DEAD) {
-		struct dl_bw *dl_b = dl_bw_of(task_cpu(p));
+		struct dl_bandwidth *dl_b = dl_bw_of(task_cpu(p));
 
 		if (p->state == TASK_DEAD && dl_se->dl_non_contending) {
 			sub_running_bw(&p->dl, dl_rq_of_se(&p->dl));
@@ -1270,9 +1264,9 @@ static enum hrtimer_restart inactive_task_timer(struct hrtimer *timer)
 			dl_se->dl_non_contending = 0;
 		}
 
-		raw_spin_lock(&dl_b->lock);
+		raw_spin_lock(&dl_b->dl_runtime_lock);
 		__dl_sub(dl_b, p->dl.dl_bw, dl_bw_cpus(task_cpu(p)));
-		raw_spin_unlock(&dl_b->lock);
+		raw_spin_unlock(&dl_b->dl_runtime_lock);
 		__dl_clear_params(p);
 
 		goto unlock;
@@ -2223,7 +2217,7 @@ static void set_cpus_allowed_dl(struct task_struct *p,
 	 * domain (see cpuset_can_attach()).
 	 */
 	if (!cpumask_intersects(src_rd->span, new_mask)) {
-		struct dl_bw *src_dl_b;
+		struct dl_bandwidth *src_dl_b;
 
 		src_dl_b = dl_bw_of(cpu_of(rq));
 		/*
@@ -2231,9 +2225,9 @@ static void set_cpus_allowed_dl(struct task_struct *p,
 		 * off. In the worst case, sched_setattr() may temporary fail
 		 * until we complete the update.
 		 */
-		raw_spin_lock(&src_dl_b->lock);
+		raw_spin_lock(&src_dl_b->dl_runtime_lock);
 		__dl_sub(src_dl_b, p->dl.dl_bw, dl_bw_cpus(task_cpu(p)));
-		raw_spin_unlock(&src_dl_b->lock);
+		raw_spin_unlock(&src_dl_b->dl_runtime_lock);
 	}
 
 	set_cpus_allowed_common(p, new_mask);
@@ -2406,7 +2400,7 @@ int sched_dl_global_validate(void)
 	u64 runtime = global_rt_runtime();
 	u64 period = global_rt_period();
 	u64 new_bw = to_ratio(period, runtime);
-	struct dl_bw *dl_b;
+	struct dl_bandwidth *dl_b;
 	int cpu, ret = 0;
 	unsigned long flags;
 
@@ -2423,10 +2417,10 @@ int sched_dl_global_validate(void)
 		rcu_read_lock_sched();
 		dl_b = dl_bw_of(cpu);
 
-		raw_spin_lock_irqsave(&dl_b->lock, flags);
-		if (new_bw < dl_b->total_bw)
+		raw_spin_lock_irqsave(&dl_b->dl_runtime_lock, flags);
+		if (new_bw < dl_b->dl_total_bw)
 			ret = -EBUSY;
-		raw_spin_unlock_irqrestore(&dl_b->lock, flags);
+		raw_spin_unlock_irqrestore(&dl_b->dl_runtime_lock, flags);
 
 		rcu_read_unlock_sched();
 
@@ -2453,7 +2447,7 @@ void init_dl_rq_bw_ratio(struct dl_rq *dl_rq)
 void sched_dl_do_global(void)
 {
 	u64 new_bw = -1;
-	struct dl_bw *dl_b;
+	struct dl_bandwidth *dl_b;
 	int cpu;
 	unsigned long flags;
 
@@ -2470,9 +2464,9 @@ void sched_dl_do_global(void)
 		rcu_read_lock_sched();
 		dl_b = dl_bw_of(cpu);
 
-		raw_spin_lock_irqsave(&dl_b->lock, flags);
-		dl_b->bw = new_bw;
-		raw_spin_unlock_irqrestore(&dl_b->lock, flags);
+		raw_spin_lock_irqsave(&dl_b->dl_runtime_lock, flags);
+		dl_b->dl_bw = new_bw;
+		raw_spin_unlock_irqrestore(&dl_b->dl_runtime_lock, flags);
 
 		rcu_read_unlock_sched();
 		init_dl_rq_bw_ratio(&cpu_rq(cpu)->dl);
@@ -2490,7 +2484,7 @@ void sched_dl_do_global(void)
 int sched_dl_overflow(struct task_struct *p, int policy,
 		      const struct sched_attr *attr)
 {
-	struct dl_bw *dl_b = dl_bw_of(task_cpu(p));
+	struct dl_bandwidth *dl_b = dl_bw_of(task_cpu(p));
 	u64 period = attr->sched_period ?: attr->sched_deadline;
 	u64 runtime = attr->sched_runtime;
 	u64 new_bw = dl_policy(policy) ? to_ratio(period, runtime) : 0;
@@ -2508,7 +2502,7 @@ int sched_dl_overflow(struct task_struct *p, int policy,
 	 * its parameters, we may need to update accordingly the total
 	 * allocated bandwidth of the container.
 	 */
-	raw_spin_lock(&dl_b->lock);
+	raw_spin_lock(&dl_b->dl_runtime_lock);
 	cpus = dl_bw_cpus(task_cpu(p));
 	if (dl_policy(policy) && !task_has_dl_policy(p) &&
 	    !__dl_overflow(dl_b, cpus, 0, new_bw)) {
@@ -2537,7 +2531,7 @@ int sched_dl_overflow(struct task_struct *p, int policy,
 		 */
 		err = 0;
 	}
-	raw_spin_unlock(&dl_b->lock);
+	raw_spin_unlock(&dl_b->dl_runtime_lock);
 
 	return err;
 }
@@ -2655,14 +2649,14 @@ int dl_task_can_attach(struct task_struct *p, const struct cpumask *cs_cpus_allo
 {
 	unsigned int dest_cpu = cpumask_any_and(cpu_active_mask,
 							cs_cpus_allowed);
-	struct dl_bw *dl_b;
+	struct dl_bandwidth *dl_b;
 	bool overflow;
 	int cpus, ret;
 	unsigned long flags;
 
 	rcu_read_lock_sched();
 	dl_b = dl_bw_of(dest_cpu);
-	raw_spin_lock_irqsave(&dl_b->lock, flags);
+	raw_spin_lock_irqsave(&dl_b->dl_runtime_lock, flags);
 	cpus = dl_bw_cpus(dest_cpu);
 	overflow = __dl_overflow(dl_b, cpus, 0, p->dl.dl_bw);
 	if (overflow)
@@ -2677,7 +2671,7 @@ int dl_task_can_attach(struct task_struct *p, const struct cpumask *cs_cpus_allo
 		__dl_add(dl_b, p->dl.dl_bw, cpus);
 		ret = 0;
 	}
-	raw_spin_unlock_irqrestore(&dl_b->lock, flags);
+	raw_spin_unlock_irqrestore(&dl_b->dl_runtime_lock, flags);
 	rcu_read_unlock_sched();
 	return ret;
 }
@@ -2686,18 +2680,18 @@ int dl_cpuset_cpumask_can_shrink(const struct cpumask *cur,
 				 const struct cpumask *trial)
 {
 	int ret = 1, trial_cpus;
-	struct dl_bw *cur_dl_b;
+	struct dl_bandwidth *cur_dl_b;
 	unsigned long flags;
 
 	rcu_read_lock_sched();
 	cur_dl_b = dl_bw_of(cpumask_any(cur));
 	trial_cpus = cpumask_weight(trial);
 
-	raw_spin_lock_irqsave(&cur_dl_b->lock, flags);
-	if (cur_dl_b->bw != -1 &&
-	    cur_dl_b->bw * trial_cpus < cur_dl_b->total_bw)
+	raw_spin_lock_irqsave(&cur_dl_b->dl_runtime_lock, flags);
+	if (cur_dl_b->dl_bw != -1 &&
+	    cur_dl_b->dl_bw * trial_cpus < cur_dl_b->dl_total_bw)
 		ret = 0;
-	raw_spin_unlock_irqrestore(&cur_dl_b->lock, flags);
+	raw_spin_unlock_irqrestore(&cur_dl_b->dl_runtime_lock, flags);
 	rcu_read_unlock_sched();
 	return ret;
 }
@@ -2705,16 +2699,16 @@ int dl_cpuset_cpumask_can_shrink(const struct cpumask *cur,
 bool dl_cpu_busy(unsigned int cpu)
 {
 	unsigned long flags;
-	struct dl_bw *dl_b;
+	struct dl_bandwidth *dl_b;
 	bool overflow;
 	int cpus;
 
 	rcu_read_lock_sched();
 	dl_b = dl_bw_of(cpu);
-	raw_spin_lock_irqsave(&dl_b->lock, flags);
+	raw_spin_lock_irqsave(&dl_b->dl_runtime_lock, flags);
 	cpus = dl_bw_cpus(cpu);
 	overflow = __dl_overflow(dl_b, cpus, 0, 0);
-	raw_spin_unlock_irqrestore(&dl_b->lock, flags);
+	raw_spin_unlock_irqrestore(&dl_b->dl_runtime_lock, flags);
 	rcu_read_unlock_sched();
 	return overflow;
 }

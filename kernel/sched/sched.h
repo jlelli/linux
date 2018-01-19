@@ -213,7 +213,7 @@ void __dl_clear_params(struct task_struct *p);
 /*
  * To keep the bandwidth of -deadline tasks and groups under control
  * we need some place where:
- *  - store the maximum -deadline bandwidth of the system (the group);
+ *  - store the maximum -deadline bandwidth of the system (the domain);
  *  - cache the fraction of that bandwidth that is currently allocated.
  *
  * This is all done in the data structure below. It is similar to the
@@ -224,20 +224,16 @@ void __dl_clear_params(struct task_struct *p);
  *
  * With respect to SMP, the bandwidth is given on a per-CPU basis,
  * meaning that:
- *  - dl_bw (< 100%) is the bandwidth of the system (group) on each CPU;
- *  - dl_total_bw array contains, in the i-eth element, the currently
- *    allocated bandwidth on the i-eth CPU.
- * Moreover, groups consume bandwidth on each CPU, while tasks only
- * consume bandwidth on the CPU they're running on.
- * Finally, dl_total_bw_cpu is used to cache the index of dl_total_bw
- * that will be shown the next time the proc or cgroup controls will
- * be red. It on its turn can be changed by writing on its own
- * control.
+ *  - dl_bw (< 100%) is the bandwidth of the system (domain) on each CPU;
+ *  - dl_total_bw array contains the currently allocated bandwidth on the
+ *    i-eth CPU.
  */
 struct dl_bandwidth {
 	raw_spinlock_t dl_runtime_lock;
-	u64 dl_runtime;
 	u64 dl_period;
+	u64 dl_runtime;
+	u64 dl_bw;
+	u64 dl_total_bw;
 };
 
 static inline int dl_bandwidth_enabled(void)
@@ -245,36 +241,30 @@ static inline int dl_bandwidth_enabled(void)
 	return sysctl_sched_rt_runtime >= 0;
 }
 
-struct dl_bw {
-	raw_spinlock_t lock;
-	u64 bw, total_bw;
-};
-
-static inline void __dl_update(struct dl_bw *dl_b, s64 bw);
+static inline void __dl_update(struct dl_bandwidth *dl_b, s64 bw);
 
 static inline
-void __dl_sub(struct dl_bw *dl_b, u64 tsk_bw, int cpus)
+void __dl_sub(struct dl_bandwidth *dl_b, u64 tsk_bw, int cpus)
 {
-	dl_b->total_bw -= tsk_bw;
+	dl_b->dl_total_bw -= tsk_bw;
 	__dl_update(dl_b, (s32)tsk_bw / cpus);
 }
 
 static inline
-void __dl_add(struct dl_bw *dl_b, u64 tsk_bw, int cpus)
+void __dl_add(struct dl_bandwidth *dl_b, u64 tsk_bw, int cpus)
 {
-	dl_b->total_bw += tsk_bw;
+	dl_b->dl_total_bw += tsk_bw;
 	__dl_update(dl_b, -((s32)tsk_bw / cpus));
 }
 
 static inline
-bool __dl_overflow(struct dl_bw *dl_b, int cpus, u64 old_bw, u64 new_bw)
+bool __dl_overflow(struct dl_bandwidth *dl_b, int cpus, u64 old_bw, u64 new_bw)
 {
-	return dl_b->bw != -1 &&
-	       dl_b->bw * cpus < dl_b->total_bw - old_bw + new_bw;
+	return dl_b->dl_bw != -1 &&
+	       dl_b->dl_bw * cpus < dl_b->dl_total_bw - old_bw + new_bw;
 }
 
 void dl_change_utilization(struct task_struct *p, u64 new_bw);
-extern void init_dl_bw(struct dl_bw *dl_b);
 extern int sched_dl_global_validate(void);
 extern void sched_dl_do_global(void);
 extern int sched_dl_overflow(struct task_struct *p, int policy,
@@ -600,7 +590,7 @@ struct dl_rq {
 	 */
 	struct rb_root_cached pushable_dl_tasks_root;
 #else
-	struct dl_bw dl_bw;
+	struct dl_bandwidth dl_bw;
 #endif
 	/*
 	 * "Active utilization" for this runqueue: increased when a
@@ -659,7 +649,7 @@ struct root_domain {
 	 */
 	cpumask_var_t dlo_mask;
 	atomic_t dlo_count;
-	struct dl_bw dl_bw;
+	struct dl_bandwidth dl_bw;
 	struct cpudl cpudl;
 
 #ifdef HAVE_RT_PUSH_IPI
@@ -2018,7 +2008,7 @@ static inline void nohz_balance_exit_idle(unsigned int cpu) { }
 
 #ifdef CONFIG_SMP
 static inline
-void __dl_update(struct dl_bw *dl_b, s64 bw)
+void __dl_update(struct dl_bandwidth *dl_b, s64 bw)
 {
 	struct root_domain *rd = container_of(dl_b, struct root_domain, dl_bw);
 	int i;
@@ -2033,9 +2023,9 @@ void __dl_update(struct dl_bw *dl_b, s64 bw)
 }
 #else
 static inline
-void __dl_update(struct dl_bw *dl_b, s64 bw)
+void __dl_update(struct dl_bandwidth *dl_b, s64 bw)
 {
-	struct dl_rq *dl = container_of(dl_b, struct dl_rq, dl_bw);
+	struct dl_rq *dl = container_of(dl_b, struct dl_rq, dl_bandwidth);
 
 	dl->extra_bw += bw;
 }
