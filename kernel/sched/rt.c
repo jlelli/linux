@@ -547,7 +547,6 @@ static inline const struct cpumask *sched_rt_period_mask(void)
 }
 #endif
 
-static inline
 struct rt_rq *sched_rt_period_rt_rq(struct rt_bandwidth *rt_b, int cpu)
 {
 	return container_of(rt_b, struct task_group, rt_bandwidth)->rt_rq[cpu];
@@ -556,6 +555,11 @@ struct rt_rq *sched_rt_period_rt_rq(struct rt_bandwidth *rt_b, int cpu)
 static inline struct rt_bandwidth *sched_rt_bandwidth(struct rt_rq *rt_rq)
 {
 	return &rt_rq->tg->rt_bandwidth;
+}
+
+struct rt_bandwidth *sched_rt_bandwidth_tg(struct task_group *tg)
+{
+	return &tg->rt_bandwidth;
 }
 
 #else /* !CONFIG_RT_GROUP_SCHED */
@@ -609,7 +613,6 @@ static inline const struct cpumask *sched_rt_period_mask(void)
 	return cpu_online_mask;
 }
 
-static inline
 struct rt_rq *sched_rt_period_rt_rq(struct rt_bandwidth *rt_b, int cpu)
 {
 	return &cpu_rq(cpu)->rt;
@@ -620,14 +623,20 @@ static inline struct rt_bandwidth *sched_rt_bandwidth(struct rt_rq *rt_rq)
 	return &def_rt_bandwidth;
 }
 
+struct rt_bandwidth *sched_rt_bandwidth_tg(struct task_group *tg)
+{
+	return &def_rt_bandwidth;
+}
+
 #endif /* CONFIG_RT_GROUP_SCHED */
 
 bool sched_rt_bandwidth_account(struct rt_rq *rt_rq)
 {
 	struct rt_bandwidth *rt_b = sched_rt_bandwidth(rt_rq);
 
-	return (hrtimer_active(&rt_b->rt_period_timer) ||
-		rt_rq->rt_time < rt_b->rt_runtime);
+	return (rt_rq->rt_nr_running &&
+		(hrtimer_active(&rt_b->rt_period_timer) ||
+		 rt_rq->rt_time < rt_b->rt_runtime));
 }
 
 #ifdef CONFIG_SMP
@@ -2423,9 +2432,14 @@ static int tg_rt_schedulable(struct task_group *tg, void *data)
 		return -EINVAL;
 
 	/*
-	 * Ensure we don't starve existing RT tasks.
+	 * Ensure we don't starve existing RT or DEADLINE tasks.
 	 */
-	if (rt_bandwidth_enabled() && !runtime && tg_has_rt_tasks(tg))
+	if (rt_bandwidth_enabled() && !runtime &&
+			(tg_has_rt_tasks(tg)
+#ifdef CONFIG_DEADLINE_GROUP_SCHED
+			 || tg_has_dl_tasks(tg)
+#endif /* CONFIG_DEADLINE_GROUP_SCHED */
+			 ))
 		return -EBUSY;
 
 	total = to_ratio(period, runtime);
@@ -2436,8 +2450,19 @@ static int tg_rt_schedulable(struct task_group *tg, void *data)
 	if (total > to_ratio(global_rt_period(), global_rt_runtime()))
 		return -EINVAL;
 
+#ifdef CONFIG_DEADLINE_GROUP_SCHED
+	/*
+	 * If decreasing our own bandwidth we must be sure we didn't already
+	 * allocate too much bandwidth.
+	 */
+	if (total < tg->dl_bandwidth.dl_total_bw)
+		return -EBUSY;
+#endif /* CONFIG_DEADLINE_GROUP_SCHED */
+
 	/*
 	 * The sum of our children's runtime should not exceed our own.
+	 * Also check that none of our children already allocated more than
+	 * the new bandwidth we want to set for ourself.
 	 */
 	list_for_each_entry_rcu(child, &tg->children, siblings) {
 		period = ktime_to_ns(child->rt_bandwidth.rt_period);
@@ -2447,6 +2472,11 @@ static int tg_rt_schedulable(struct task_group *tg, void *data)
 			period = d->rt_period;
 			runtime = d->rt_runtime;
 		}
+
+#ifdef CONFIG_DEADLINE_GROUP_SCHED
+		if (total < child->dl_bandwidth.dl_total_bw)
+			return -EBUSY;
+#endif /* CONFIG_DEADLINE_GROUP_SCHED */
 
 		sum += to_ratio(period, runtime);
 	}
@@ -2507,6 +2537,16 @@ static int tg_set_rt_bandwidth(struct task_group *tg,
 		rt_rq->rt_runtime = rt_runtime;
 		raw_spin_unlock(&rt_rq->rt_runtime_lock);
 	}
+
+#ifdef CONFIG_DEADLINE_GROUP_SCHED
+	raw_spin_lock(&tg->dl_bandwidth.dl_runtime_lock);
+	tg->dl_bandwidth.dl_period = tg->rt_bandwidth.rt_period;
+	tg->dl_bandwidth.dl_runtime = tg->rt_bandwidth.rt_runtime;
+	tg->dl_bandwidth.dl_bw =
+		to_ratio(tg->dl_bandwidth.dl_period,
+			 tg->dl_bandwidth.dl_runtime);
+	raw_spin_unlock(&tg->dl_bandwidth.dl_runtime_lock);
+#endif /* CONFIG_DEADLINE_GROUP_SCHED */
 	raw_spin_unlock_irq(&tg->rt_bandwidth.rt_runtime_lock);
 unlock:
 	read_unlock(&tasklist_lock);
