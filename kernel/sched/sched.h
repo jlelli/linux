@@ -285,6 +285,7 @@ extern bool dl_cpu_busy(unsigned int cpu);
 
 struct cfs_rq;
 struct rt_rq;
+struct dl_rq;
 
 extern struct list_head task_groups;
 
@@ -332,6 +333,10 @@ struct task_group {
 	struct rt_rq **rt_rq;
 
 	struct rt_bandwidth rt_bandwidth;
+#endif
+#ifdef CONFIG_DEADLINE_GROUP_SCHED
+	struct dl_rq **dl_rq;
+	struct dl_bandwidth dl_bandwidth;
 #endif
 
 	struct rcu_head rcu;
@@ -404,6 +409,17 @@ extern int sched_group_set_rt_period(struct task_group *tg, u64 rt_period_us);
 extern long sched_group_rt_runtime(struct task_group *tg);
 extern long sched_group_rt_period(struct task_group *tg);
 extern int sched_rt_can_attach(struct task_group *tg, struct task_struct *tsk);
+
+extern void free_dl_sched_group(struct task_group *tg);
+extern int alloc_dl_sched_group(struct task_group *tg, struct task_group *parent);
+extern void init_tg_dl_entry(struct task_group *tg, struct dl_rq *dl_rq,
+		struct sched_dl_entity *dl_se, int cpu,
+		struct sched_dl_entity *parent);
+extern int tg_has_dl_tasks(struct task_group *tg);
+extern u64 sched_group_dl_bw(struct task_group *tg);
+extern u64 sched_group_dl_total_bw(struct task_group *tg);
+extern int sched_dl_can_attach(struct task_group *tg, struct task_struct *tsk);
+
 
 extern struct task_group *sched_create_group(struct task_group *parent);
 extern void sched_online_group(struct task_group *tg,
@@ -1194,7 +1210,7 @@ static inline struct task_group *task_group(struct task_struct *p)
 /* Change a task's cfs_rq and parent entity if it moves across CPUs/groups */
 static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
 {
-#if defined(CONFIG_FAIR_GROUP_SCHED) || defined(CONFIG_RT_GROUP_SCHED)
+#if defined(CONFIG_FAIR_GROUP_SCHED) || defined(CONFIG_RT_GROUP_SCHED) || defined(CONFIG_DEADLINE_GROUP_SCHED)
 	struct task_group *tg = task_group(p);
 #endif
 

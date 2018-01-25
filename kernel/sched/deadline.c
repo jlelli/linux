@@ -361,7 +361,6 @@ void init_dl_rq(struct dl_rq *dl_rq)
 	dl_rq->overloaded = 0;
 	dl_rq->pushable_dl_tasks_root = RB_ROOT_CACHED;
 #else
-	init_dl_bandwidth(&dl_rq->dl_bw);
 	init_dl_bandwidth(&dl_rq->dl_bw, global_rt_period(), global_rt_runtime());
 #endif
 
@@ -369,6 +368,129 @@ void init_dl_rq(struct dl_rq *dl_rq)
 	dl_rq->this_bw = 0;
 	init_dl_rq_bw_ratio(dl_rq);
 }
+
+#ifdef CONFIG_DEADLINE_GROUP_SCHED
+u64 sched_group_dl_bw(struct task_group *tg)
+{
+	return tg->dl_bandwidth.dl_bw;
+}
+
+u64 sched_group_dl_total_bw(struct task_group *tg)
+{
+	return tg->dl_bandwidth.dl_total_bw;
+}
+
+/* Must be called with tasklist_lock held */
+int tg_has_dl_tasks(struct task_group *tg)
+{
+	struct task_struct *g, *p;
+
+	/*
+	 * Autogroups do not have DL tasks; see autogroup_create().
+	 */
+	if (task_group_is_autogroup(tg))
+		return 0;
+
+	do_each_thread(g, p) {
+		if (task_has_dl_policy(p) && task_group(p) == tg)
+			return 1;
+	} while_each_thread(g, p);
+
+	return 0;
+}
+
+int sched_dl_can_attach(struct task_group *tg, struct task_struct *tsk)
+{
+	int cpus, ret = 1;
+	struct rq_flags rf;
+	struct task_group *orig_tg;
+	struct rq *rq = task_rq_lock(tsk, &rf);
+
+	if (!dl_task(tsk))
+		goto unlock_rq;
+
+	/* Don't accept tasks when there is no way for them to run */
+	if (tg->dl_bandwidth.dl_runtime == 0) {
+		ret = 0;
+		goto unlock_rq;
+	}
+
+	/*
+	 * Check that the group has enough bandwidth left to accept this task.
+	 *
+	 * If there is space for the task:
+	 *   - reserve space for it in destination group
+	 *   - remove task bandwidth contribution from current group
+	 */
+	raw_spin_lock(&tg->dl_bandwidth.dl_runtime_lock);
+	cpus = dl_bw_cpus(task_cpu(tsk));
+	if (__dl_overflow(&tg->dl_bandwidth, cpus, 0, tsk->dl.dl_bw)) {
+		ret = 0;
+	} else {
+		tg->dl_bandwidth.dl_total_bw += tsk->dl.dl_bw;
+	}
+	raw_spin_unlock(&tg->dl_bandwidth.dl_runtime_lock);
+
+	/*
+	 * We managed to allocate tsk bandwidth in the new group,
+	 * remove that from the old one.
+	 * Doing this here is preferred instead of taking both
+	 * dl_runtime_lock together.
+	 */
+	if (ret) {
+		orig_tg = task_group(tsk);
+		raw_spin_lock(&orig_tg->dl_bandwidth.dl_runtime_lock);
+		orig_tg->dl_bandwidth.dl_total_bw -= tsk->dl.dl_bw;
+		raw_spin_unlock(&orig_tg->dl_bandwidth.dl_runtime_lock);
+	}
+
+unlock_rq:
+	task_rq_unlock(rq, tsk, &rf);
+
+	return ret;
+}
+
+void init_tg_dl_entry(struct task_group *tg, struct dl_rq *dl_rq,
+		struct sched_dl_entity *dl_se, int cpu,
+		struct sched_dl_entity *parent)
+{
+	tg->dl_rq[cpu] = dl_rq;
+}
+
+int alloc_dl_sched_group(struct task_group *tg, struct task_group *parent)
+{
+	struct rq *rq;
+	int i;
+
+	tg->dl_rq = kzalloc(sizeof(struct dl_rq *) * nr_cpu_ids, GFP_KERNEL);
+	if (!tg->dl_rq)
+		return 0;
+
+	init_dl_bandwidth(&tg->dl_bandwidth,
+			ktime_to_ns(def_dl_bandwidth.dl_period), 0);
+
+	for_each_possible_cpu(i) {
+		rq = cpu_rq(i);
+		init_tg_dl_entry(tg, &rq->dl, NULL, i, NULL);
+	}
+
+	return 1;
+}
+
+void free_dl_sched_group(struct task_group *tg)
+{
+	kfree(tg->dl_rq);
+}
+
+#else /* !CONFIG_DEADLINE_GROUP_SCHED */
+int alloc_dl_sched_group(struct task_group *tg, struct task_group *parent)
+{
+	return 1;
+}
+
+void free_dl_sched_group(struct task_group *tg) { }
+
+#endif /*CONFIG_DEADLINE_GROUP_SCHED*/
 
 #ifdef CONFIG_SMP
 
@@ -1267,6 +1389,14 @@ static enum hrtimer_restart inactive_task_timer(struct hrtimer *timer)
 		raw_spin_lock(&dl_b->dl_runtime_lock);
 		__dl_sub(dl_b, p->dl.dl_bw, dl_bw_cpus(task_cpu(p)));
 		raw_spin_unlock(&dl_b->dl_runtime_lock);
+#ifdef CONFIG_DEADLINE_GROUP_SCHED
+		{
+		struct dl_bandwidth *tg_b = &task_group(p)->dl_bandwidth;
+		raw_spin_lock(&tg_b->dl_runtime_lock);
+		tg_b->dl_total_bw -= p->dl.dl_bw;
+		raw_spin_unlock(&tg_b->dl_runtime_lock);
+		}
+#endif /* CONFIG_DEADLINE_GROUP_SCHED */
 		__dl_clear_params(p);
 
 		goto unlock;
@@ -2484,11 +2614,11 @@ void sched_dl_do_global(void)
 int sched_dl_overflow(struct task_struct *p, int policy,
 		      const struct sched_attr *attr)
 {
-	struct dl_bandwidth *dl_b = dl_bw_of(task_cpu(p));
+	struct dl_bandwidth *dl_b = dl_bw_of(task_cpu(p)), *tg_b;
 	u64 period = attr->sched_period ?: attr->sched_deadline;
 	u64 runtime = attr->sched_runtime;
 	u64 new_bw = dl_policy(policy) ? to_ratio(period, runtime) : 0;
-	int cpus, err = -1;
+	int cpus, err = -1, change = 0;
 
 	if (attr->sched_flags & SCHED_FLAG_SUGOV)
 		return 0;
@@ -2522,6 +2652,7 @@ int sched_dl_overflow(struct task_struct *p, int policy,
 		__dl_sub(dl_b, p->dl.dl_bw, cpus);
 		__dl_add(dl_b, new_bw, cpus);
 		dl_change_utilization(p, new_bw);
+		change = 1;
 		err = 0;
 	} else if (!dl_policy(policy) && task_has_dl_policy(p)) {
 		/*
@@ -2532,6 +2663,18 @@ int sched_dl_overflow(struct task_struct *p, int policy,
 		err = 0;
 	}
 	raw_spin_unlock(&dl_b->dl_runtime_lock);
+
+#ifdef CONFIG_DEADLINE_GROUP_SCHED
+	/* Add new_bw to task group p belongs to. */
+	if (!err) {
+		tg_b = &task_group(p)->dl_bandwidth;
+		raw_spin_lock(&tg_b->dl_runtime_lock);
+		if (change)
+			tg_b->dl_total_bw -= p->dl.dl_bw;
+		tg_b->dl_total_bw += new_bw;
+		raw_spin_unlock(&tg_b->dl_runtime_lock);
+	}
+#endif /* CONFIG_DEADLINE_GROUP_SCHED */
 
 	return err;
 }

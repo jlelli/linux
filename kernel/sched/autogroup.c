@@ -91,6 +91,13 @@ static inline struct autogroup *autogroup_create(void)
 	tg->rt_se = root_task_group.rt_se;
 	tg->rt_rq = root_task_group.rt_rq;
 #endif
+#ifdef CONFIG_DEADLINE_GROUP_SCHED
+	/*
+	 * Similarly to what above we do for DEADLINE tasks.
+	 */
+	free_dl_sched_group(tg);
+	tg->dl_rq = root_task_group.dl_rq;
+#endif
 	tg->autogroup = ag;
 
 	sched_online_group(tg, &root_task_group);
