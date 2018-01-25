@@ -4225,7 +4225,8 @@ change:
 #endif
 #ifdef CONFIG_SMP
 		if (dl_bandwidth_enabled() && dl_policy(policy) &&
-				!(attr->sched_flags & SCHED_FLAG_SUGOV)) {
+				!(attr->sched_flags & SCHED_FLAG_SUGOV) &&
+				!task_group_is_autogroup(task_group(p))) {
 			cpumask_t *span = rq->rd->span;
 
 			/*
@@ -5901,6 +5902,9 @@ void __init sched_init(void)
 #ifdef CONFIG_RT_GROUP_SCHED
 	alloc_size += 2 * nr_cpu_ids * sizeof(void **);
 #endif
+#ifdef CONFIG_DEADLINE_GROUP_SCHED
+	alloc_size += nr_cpu_ids * sizeof(void **);
+#endif
 	if (alloc_size) {
 		ptr = (unsigned long)kzalloc(alloc_size, GFP_NOWAIT);
 
@@ -5920,6 +5924,11 @@ void __init sched_init(void)
 		ptr += nr_cpu_ids * sizeof(void **);
 
 #endif /* CONFIG_RT_GROUP_SCHED */
+#ifdef CONFIG_DEADLINE_GROUP_SCHED
+		root_task_group.dl_rq = (struct dl_rq **)ptr;
+		ptr += nr_cpu_ids * sizeof(void **);
+
+#endif /* CONFIG_DEADLINE_GROUP_SCHED */
 	}
 #ifdef CONFIG_CPUMASK_OFFSTACK
 	for_each_possible_cpu(i) {
@@ -5941,6 +5950,11 @@ void __init sched_init(void)
 	init_rt_bandwidth(&root_task_group.rt_bandwidth,
 			global_rt_period(), global_rt_runtime());
 #endif /* CONFIG_RT_GROUP_SCHED */
+#ifdef CONFIG_DEADLINE_GROUP_SCHED
+	init_dl_bandwidth(&root_task_group.dl_bandwidth,
+			global_rt_period(), global_rt_runtime());
+#endif /* CONFIG_DEADLINE_GROUP_SCHED */
+
 
 #ifdef CONFIG_CGROUP_SCHED
 	task_group_cache = KMEM_CACHE(task_group, 0);
@@ -5993,6 +6007,10 @@ void __init sched_init(void)
 #ifdef CONFIG_RT_GROUP_SCHED
 		init_tg_rt_entry(&root_task_group, &rq->rt, NULL, i, NULL);
 #endif
+#ifdef CONFIG_DEADLINE_GROUP_SCHED
+		init_tg_dl_entry(&root_task_group, &rq->dl, NULL, i, NULL);
+#endif
+
 
 		for (j = 0; j < CPU_LOAD_IDX_MAX; j++)
 			rq->cpu_load[j] = 0;
@@ -6225,6 +6243,7 @@ static void sched_free_group(struct task_group *tg)
 {
 	free_fair_sched_group(tg);
 	free_rt_sched_group(tg);
+	free_dl_sched_group(tg);
 	autogroup_free(tg);
 	kmem_cache_free(task_group_cache, tg);
 }
@@ -6242,6 +6261,9 @@ struct task_group *sched_create_group(struct task_group *parent)
 		goto err;
 
 	if (!alloc_rt_sched_group(tg, parent))
+		goto err;
+
+	if (!alloc_dl_sched_group(tg, parent))
 		goto err;
 
 	return tg;
@@ -6427,14 +6449,20 @@ static int cpu_cgroup_can_attach(struct cgroup_taskset *tset)
 	int ret = 0;
 
 	cgroup_taskset_for_each(task, css, tset) {
+#if defined CONFIG_DEADLINE_GROUP_SCHED || defined CONFIG_RT_GROUP_SCHED
+#ifdef CONFIG_DEADLINE_GROUP_SCHED
+		if (!sched_dl_can_attach(css_tg(css), task))
+			return -EINVAL;
+#endif /* CONFIG_DEADLINE_GROUP_SCHED */
 #ifdef CONFIG_RT_GROUP_SCHED
 		if (!sched_rt_can_attach(css_tg(css), task))
 			return -EINVAL;
+#endif /* CONFIG_RT_GROUP_SCHED */
 #else
 		/* We don't support RT-tasks being in separate groups */
 		if (task->sched_class != &fair_sched_class)
 			return -EINVAL;
-#endif
+#endif /* CONFIG_DEADLINE_GROUP_SCHED || CONFIG_RT_GROUP_SCHED */
 		/*
 		 * Serialize against wake_up_new_task() such that if its
 		 * running, we're sure to observe its full state.
@@ -6750,6 +6778,18 @@ static u64 cpu_rt_period_read_uint(struct cgroup_subsys_state *css,
 	return sched_group_rt_period(css_tg(css));
 }
 #endif /* CONFIG_RT_GROUP_SCHED */
+#ifdef CONFIG_DEADLINE_GROUP_SCHED
+static u64 cpu_dl_bw_read(struct cgroup_subsys_state *css,
+			  struct cftype *cft)
+{
+	return sched_group_dl_bw(css_tg(css));
+}
+static u64 cpu_dl_total_bw_read(struct cgroup_subsys_state *css,
+				struct cftype *cft)
+{
+	return sched_group_dl_total_bw(css_tg(css));
+}
+#endif /* CONFIG_DEADLINE_GROUP_SCHED */
 
 static struct cftype cpu_legacy_files[] = {
 #ifdef CONFIG_FAIR_GROUP_SCHED
@@ -6785,6 +6825,16 @@ static struct cftype cpu_legacy_files[] = {
 		.name = "rt_period_us",
 		.read_u64 = cpu_rt_period_read_uint,
 		.write_u64 = cpu_rt_period_write_uint,
+	},
+#endif
+#ifdef CONFIG_DEADLINE_GROUP_SCHED
+	{
+		.name = "dl_bw",
+		.read_u64 = cpu_dl_bw_read,
+	},
+	{
+		.name = "dl_total_bw",
+		.read_u64 = cpu_dl_total_bw_read,
 	},
 #endif
 	{ }	/* Terminate */
