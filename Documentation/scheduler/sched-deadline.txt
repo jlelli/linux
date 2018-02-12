@@ -528,11 +528,8 @@ CONTENTS
  to -deadline tasks is similar to the one already used for -rt
  tasks with real-time group scheduling (a.k.a. RT-throttling - see
  Documentation/scheduler/sched-rt-group.txt), and is based on readable/
- writable control files located in procfs (for system wide settings).
- Notice that per-group settings (controlled through cgroupfs) are still not
- defined for -deadline tasks, because more discussion is needed in order to
- figure out how we want to manage SCHED_DEADLINE bandwidth at the task group
- level.
+ writable control files located in procfs (for system wide settings) and in
+ cgroupfs (per-group settings).
 
  A main difference between deadline bandwidth management and RT-throttling
  is that -deadline tasks have bandwidth on their own (while -rt ones don't!),
@@ -553,9 +550,9 @@ CONTENTS
  For now the -rt knobs are used for -deadline admission control and the
  -deadline runtime is accounted against the -rt runtime. We realize that this
  isn't entirely desirable; however, it is better to have a small interface for
- now, and be able to change it easily later. The ideal situation (see 5.) is to
- run -rt tasks from a -deadline server; in which case the -rt bandwidth is a
- direct subset of dl_bw.
+ now, and be able to change it easily later. The ideal situation (see 6.) is to
+ run -rt tasks from a -deadline server (H-CBS); in which case the -rt bandwidth
+ is a direct subset of dl_bw.
 
  This means that, for a root_domain comprising M CPUs, -deadline tasks
  can be created while the sum of their bandwidths stays below:
@@ -623,6 +620,27 @@ CONTENTS
  make the leftoever runtime available for reclamation by other
  SCHED_DEADLINE tasks.
 
+4.4 Grouping tasks
+------------------
+
+CONFIG_DEADLINE_GROUP_SCHED depends on CONFIG_RT_GROUP_SCHED, so go on and
+read Documentation/scheduler/sched-rt-group.txt first.
+
+Enabling CONFIG_DEADLINE_GROUP_SCHED lets you explicitly manage CPU bandwidth
+for task groups.
+
+This uses the cgroup virtual file system and "<cgroup>/cpu.rt_runtime_us
+<cgroup>/cpu.rt_period_us" to control the CPU time reserved for each control
+group. Yes, they are the same of CONFIG_RT_GROUP_SCHED since RT and DEADLINE
+share the same bandwidth. In addition to these CONFIG_DEADLINE_GROUP_SCHED
+adds "<cgroup>/cpu.dl_bw" (maximum bandwidth on each CPU available to the
+group, corresponds to cpu.rt_runtime_us/cpu.rt_period_us) and
+"<cgroup>/cpu.dl_total_bw" (a group's current allocated bandwidth); both are
+non-writable.
+
+Group settings are checked against same limits of CONFIG_RT_GROUP_SCHED:
+
+   \Sum_{i} runtime_{i} / global_period <= global_runtime / global_period
 
 5. Tasks CPU affinity
 =====================
@@ -661,7 +679,7 @@ CONTENTS
     of retaining bandwidth isolation among non-interacting tasks. This is
     being studied from both theoretical and practical points of view, and
     hopefully we should be able to produce some demonstrative code soon;
-  - (c)group based bandwidth management, and maybe scheduling;
+  - (c)group based scheduling (Hierachical-CBS);
   - access control for non-root users (and related security concerns to
     address), which is the best way to allow unprivileged use of the mechanisms
     and how to prevent non-root users "cheat" the system?
