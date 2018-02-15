@@ -751,18 +751,6 @@ config RT_GROUP_SCHED
 	  realtime bandwidth for them.
 	  See Documentation/scheduler/sched-rt-group.txt for more information.
 
-config DEADLINE_GROUP_SCHED
-	bool "Group scheduling for SCHED_DEADLINE"
-	depends on CGROUP_SCHED
-	select RT_GROUP_SCHED
-	default n
-	help
-	  This feature lets you explicitly specify, in terms of runtime
-	  and period, the bandwidth of each task control group. This means
-	  tasks (and other groups) can be added to it only up to such
-	  "bandwidth cap", which might be useful for avoiding or
-	  controlling oversubscription.
-
 endif #CGROUP_SCHED
 
 config CGROUP_PIDS

@@ -90,8 +90,7 @@ static inline struct autogroup *autogroup_create(void)
 	free_rt_sched_group(tg);
 	tg->rt_se = root_task_group.rt_se;
 	tg->rt_rq = root_task_group.rt_rq;
-#endif
-#ifdef CONFIG_DEADLINE_GROUP_SCHED
+
 	/*
 	 * Similarly to what above we do for DEADLINE tasks.
 	 */
