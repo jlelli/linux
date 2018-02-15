@@ -369,7 +369,7 @@ void init_dl_rq(struct dl_rq *dl_rq)
 	init_dl_rq_bw_ratio(dl_rq);
 }
 
-#ifdef CONFIG_DEADLINE_GROUP_SCHED
+#ifdef CONFIG_RT_GROUP_SCHED
 u64 sched_group_dl_bw(struct task_group *tg)
 {
 	return tg->dl_bandwidth.dl_bw;
@@ -458,14 +458,14 @@ int alloc_dl_sched_group(struct task_group *tg, struct task_group *parent)
 	return 1;
 }
 
-#else /* !CONFIG_DEADLINE_GROUP_SCHED */
+#else /* !CONFIG_RT_GROUP_SCHED */
 
 int alloc_dl_sched_group(struct task_group *tg, struct task_group *parent)
 {
 	return 1;
 }
 
-#endif /*CONFIG_DEADLINE_GROUP_SCHED*/
+#endif /*CONFIG_RT_GROUP_SCHED*/
 
 void free_dl_sched_group(struct task_group *tg) { }
 
@@ -1334,13 +1334,13 @@ throttle:
 	 * out before that can happen.
 	 */
 	if (rt_bandwidth_enabled()) {
-#ifdef CONFIG_DEADLINE_GROUP_SCHED
+#ifdef CONFIG_RT_GROUP_SCHED
 		struct rt_bandwidth *rt_b =
 			sched_rt_bandwidth_tg(task_group(curr));
 		struct rt_rq *rt_rq = sched_rt_period_rt_rq(rt_b, cpu_of(rq));
 #else
 		struct rt_rq *rt_rq = &rq->rt;
-#endif /* CONFIG_DEADLINE_GROUP_SCHED */
+#endif /* CONFIG_RT_GROUP_SCHED */
 
 		raw_spin_lock(&rt_rq->rt_runtime_lock);
 		/*
@@ -1377,14 +1377,14 @@ static enum hrtimer_restart inactive_task_timer(struct hrtimer *timer)
 		raw_spin_lock(&dl_b->dl_runtime_lock);
 		__dl_sub(dl_b, p->dl.dl_bw, dl_bw_cpus(task_cpu(p)));
 		raw_spin_unlock(&dl_b->dl_runtime_lock);
-#ifdef CONFIG_DEADLINE_GROUP_SCHED
+#ifdef CONFIG_RT_GROUP_SCHED
 		{
 		struct dl_bandwidth *tg_b = &task_group(p)->dl_bandwidth;
 		raw_spin_lock(&tg_b->dl_runtime_lock);
 		tg_b->dl_total_bw -= p->dl.dl_bw;
 		raw_spin_unlock(&tg_b->dl_runtime_lock);
 		}
-#endif /* CONFIG_DEADLINE_GROUP_SCHED */
+#endif /* CONFIG_RT_GROUP_SCHED */
 		__dl_clear_params(p);
 
 		goto unlock;
@@ -2660,7 +2660,7 @@ int sched_dl_overflow(struct task_struct *p, int policy,
 	}
 	raw_spin_unlock(&dl_b->dl_runtime_lock);
 
-#ifdef CONFIG_DEADLINE_GROUP_SCHED
+#ifdef CONFIG_RT_GROUP_SCHED
 	/* Add new_bw to task group p belongs to. */
 	if (!err) {
 		struct dl_bandwidth *tg_b = &task_group(p)->dl_bandwidth;
@@ -2671,7 +2671,7 @@ int sched_dl_overflow(struct task_struct *p, int policy,
 		tg_b->dl_total_bw += new_bw;
 		raw_spin_unlock(&tg_b->dl_runtime_lock);
 	}
-#endif /* CONFIG_DEADLINE_GROUP_SCHED */
+#endif /* CONFIG_RT_GROUP_SCHED */
 
 	return err;
 }
