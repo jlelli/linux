@@ -594,26 +594,15 @@ void print_cfs_rq(struct seq_file *m, int cpu, struct cfs_rq *cfs_rq)
 
 void print_rt_rq(struct seq_file *m, int cpu, struct rt_rq *rt_rq)
 {
-#ifdef CONFIG_RT_GROUP_SCHED
-	SEQ_printf(m, "\nrt_rq[%d]:%s\n", cpu, task_group_path(rt_rq->tg));
-#else
 	SEQ_printf(m, "\nrt_rq[%d]:\n", cpu);
-#endif
 
-#define P(x) \
-	SEQ_printf(m, "  .%-30s: %Ld\n", #x, (long long)(rt_rq->x))
 #define PU(x) \
 	SEQ_printf(m, "  .%-30s: %lu\n", #x, (unsigned long)(rt_rq->x))
-#define PN(x) \
-	SEQ_printf(m, "  .%-30s: %Ld.%06ld\n", #x, SPLIT_NS(rt_rq->x))
 
 	PU(rt_nr_running);
 #ifdef CONFIG_SMP
 	PU(rt_nr_migratory);
 #endif
-	P(rt_throttled);
-	PN(rt_time);
-	PN(rt_runtime);
 
 #undef PN
 #undef PU

@@ -1339,40 +1339,6 @@ throttle:
 		if (!is_leftmost(curr, &rq->dl))
 			resched_curr(rq);
 	}
-
-	/*
-	 * Because -- for now -- we share the rt bandwidth, we need to
-	 * account our runtime there too, otherwise actual rt tasks
-	 * would be able to exceed the shared quota.
-	 *
-	 * Account to curr's group, or the root rt group if group scheduling
-	 * is not in use. XXX if RT_RUNTIME_SHARE is enabled we should
-	 * probably split accounting between all rd rt_rq(s), but locking is
-	 * ugly. :/
-	 *
-	 * The solution we're working towards is having the RT groups scheduled
-	 * using deadline servers -- however there's a few nasties to figure
-	 * out before that can happen.
-	 */
-	if (rt_bandwidth_enabled()) {
-#ifdef CONFIG_RT_GROUP_SCHED
-		struct rt_bandwidth *rt_b =
-			sched_rt_bandwidth_tg(task_group(curr));
-		struct rt_rq *rt_rq = sched_rt_period_rt_rq(rt_b, cpu_of(rq));
-#else
-		struct rt_rq *rt_rq = &rq->rt;
-#endif /* CONFIG_RT_GROUP_SCHED */
-
-		raw_spin_lock(&rt_rq->rt_runtime_lock);
-		/*
-		 * We'll let actual RT tasks worry about the overflow here, we
-		 * have our own CBS to keep us inline; only account when RT
-		 * bandwidth is relevant.
-		 */
-		if (sched_rt_bandwidth_account(rt_rq))
-			rt_rq->rt_time += delta_exec;
-		raw_spin_unlock(&rt_rq->rt_runtime_lock);
-	}
 }
 
 static enum hrtimer_restart inactive_task_timer(struct hrtimer *timer)

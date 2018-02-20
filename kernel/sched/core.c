@@ -4217,7 +4217,7 @@ change:
 		 * assigned.
 		 */
 		if (rt_bandwidth_enabled() && rt_policy(policy) &&
-				task_group(p)->rt_bandwidth.rt_runtime == 0 &&
+				task_group(p)->dl_bandwidth.dl_runtime == 0 &&
 				!task_group_is_autogroup(task_group(p))) {
 			task_rq_unlock(rq, p, &rf);
 			return -EPERM;
@@ -5916,13 +5916,6 @@ void __init sched_init(void)
 
 #endif /* CONFIG_FAIR_GROUP_SCHED */
 #ifdef CONFIG_RT_GROUP_SCHED
-		root_task_group.rt_se = (struct sched_rt_entity **)ptr;
-		ptr += nr_cpu_ids * sizeof(void **);
-
-		root_task_group.rt_rq = (struct rt_rq **)ptr;
-		ptr += nr_cpu_ids * sizeof(void **);
-
-		/* For DEADLINE */
 		root_task_group.dl_rq = (struct dl_rq **)ptr;
 		ptr += nr_cpu_ids * sizeof(void **);
 
@@ -5937,7 +5930,6 @@ void __init sched_init(void)
 	}
 #endif /* CONFIG_CPUMASK_OFFSTACK */
 
-	init_rt_bandwidth(&def_rt_bandwidth, global_rt_period(), global_rt_runtime());
 	init_dl_bandwidth(&def_dl_bandwidth, global_rt_period(), global_rt_runtime());
 
 #ifdef CONFIG_SMP
@@ -5945,8 +5937,6 @@ void __init sched_init(void)
 #endif
 
 #ifdef CONFIG_RT_GROUP_SCHED
-	init_rt_bandwidth(&root_task_group.rt_bandwidth,
-			global_rt_period(), global_rt_runtime());
 	init_dl_bandwidth(&root_task_group.dl_bandwidth,
 			global_rt_period(), global_rt_runtime());
 #endif /* CONFIG_RT_GROUP_SCHED */
@@ -5999,9 +5989,7 @@ void __init sched_init(void)
 		init_tg_cfs_entry(&root_task_group, &rq->cfs, NULL, i, NULL);
 #endif /* CONFIG_FAIR_GROUP_SCHED */
 
-		rq->rt.rt_runtime = def_rt_bandwidth.rt_runtime;
 #ifdef CONFIG_RT_GROUP_SCHED
-		init_tg_rt_entry(&root_task_group, &rq->rt, NULL, i, NULL);
 		init_tg_dl_entry(&root_task_group, &rq->dl, NULL, i, NULL);
 #endif /* CONFIG_RT_GROUP_SCHED */
 
@@ -6236,7 +6224,6 @@ static DEFINE_SPINLOCK(task_group_lock);
 static void sched_free_group(struct task_group *tg)
 {
 	free_fair_sched_group(tg);
-	free_rt_sched_group(tg);
 	free_dl_sched_group(tg);
 	autogroup_free(tg);
 	kmem_cache_free(task_group_cache, tg);
@@ -6252,9 +6239,6 @@ struct task_group *sched_create_group(struct task_group *parent)
 		return ERR_PTR(-ENOMEM);
 
 	if (!alloc_fair_sched_group(tg, parent))
-		goto err;
-
-	if (!alloc_rt_sched_group(tg, parent))
 		goto err;
 
 	if (!alloc_dl_sched_group(tg, parent))
@@ -6445,9 +6429,6 @@ static int cpu_cgroup_can_attach(struct cgroup_taskset *tset)
 	cgroup_taskset_for_each(task, css, tset) {
 #ifdef CONFIG_RT_GROUP_SCHED
 		if (!sched_dl_can_attach(css_tg(css), task))
-			return -EINVAL;
-
-		if (!sched_rt_can_attach(css_tg(css), task))
 			return -EINVAL;
 #else
 		/* We don't support RT-tasks being in separate groups */

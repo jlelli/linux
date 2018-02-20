@@ -329,11 +329,6 @@ struct task_group {
 #endif
 
 #ifdef CONFIG_RT_GROUP_SCHED
-	struct sched_rt_entity **rt_se;
-	struct rt_rq **rt_rq;
-
-	struct rt_bandwidth rt_bandwidth;
-
 	struct dl_rq **dl_rq;
 	struct dl_bandwidth dl_bandwidth;
 #endif
@@ -548,34 +543,16 @@ struct rt_rq {
 	struct rt_prio_array active;
 	unsigned int rt_nr_running;
 	unsigned int rr_nr_running;
-#if defined CONFIG_SMP || defined CONFIG_RT_GROUP_SCHED
+#ifdef CONFIG_SMP
 	struct {
 		int curr; /* highest queued rt task prio */
-#ifdef CONFIG_SMP
 		int next; /* next highest */
-#endif
 	} highest_prio;
-#endif
-#ifdef CONFIG_SMP
 	unsigned long rt_nr_migratory;
 	unsigned long rt_nr_total;
 	int overloaded;
 	struct plist_head pushable_tasks;
 #endif /* CONFIG_SMP */
-	int rt_queued;
-
-	int rt_throttled;
-	u64 rt_time;
-	u64 rt_runtime;
-	/* Nests inside the rq lock: */
-	raw_spinlock_t rt_runtime_lock;
-
-#ifdef CONFIG_RT_GROUP_SCHED
-	unsigned long rt_nr_boosted;
-
-	struct rq *rq;
-	struct task_group *tg;
-#endif
 };
 
 /* Deadline class' related fields in a runqueue */
@@ -1211,7 +1188,7 @@ static inline struct task_group *task_group(struct task_struct *p)
 /* Change a task's cfs_rq and parent entity if it moves across CPUs/groups */
 static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
 {
-#if defined(CONFIG_FAIR_GROUP_SCHED) || defined(CONFIG_RT_GROUP_SCHED)
+#ifdef CONFIG_FAIR_GROUP_SCHED
 	struct task_group *tg = task_group(p);
 #endif
 
@@ -1219,11 +1196,6 @@ static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
 	set_task_rq_fair(&p->se, p->se.cfs_rq, tg->cfs_rq[cpu]);
 	p->se.cfs_rq = tg->cfs_rq[cpu];
 	p->se.parent = tg->se[cpu];
-#endif
-
-#ifdef CONFIG_RT_GROUP_SCHED
-	p->rt.rt_rq  = tg->rt_rq[cpu];
-	p->rt.parent = tg->rt_se[cpu];
 #endif
 }
 
