@@ -288,6 +288,8 @@ extern void task_non_contending(struct task_struct *p);
 extern void enqueue_dl_entity(struct sched_dl_entity *dl_se,
 			      struct sched_dl_entity *pi_se, int flags);
 extern void dequeue_dl_entity(struct sched_dl_entity *dl_se);
+extern void add_rq_bw(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq);
+extern void sub_rq_bw(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq);
 
 #ifdef CONFIG_CGROUP_SCHED
 

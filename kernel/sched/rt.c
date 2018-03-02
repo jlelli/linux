@@ -34,6 +34,8 @@ void init_phantom_rt_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtim
 	init_dl_bandwidth(&rt_b->dl_bandwidth, period, runtime);
 
 	for_each_possible_cpu(i) {
+		struct dl_rq *dl_rq = &cpu_rq(i)->dl;
+
 		rt_rq = kzalloc_node(sizeof(struct rt_rq),
 				     GFP_KERNEL, cpu_to_node(i));
 		if (!rt_rq)
@@ -55,11 +57,21 @@ void init_phantom_rt_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtim
 		dl_se->dl_bw = to_ratio(dl_se->dl_period, dl_se->dl_runtime);
 		dl_se->dl_density = to_ratio(dl_se->dl_deadline, dl_se->dl_runtime);
 		dl_se->my_q = rt_rq;
+		dl_se->dl_rq = dl_rq;
+		printk_deferred("%s: dl_se=%px dl_runtime=%llu dl_period=%llu dl_bw=%llu\n",
+				__func__, &dl_se, dl_se->dl_runtime,
+				dl_se->dl_period, dl_se->dl_bw);
+		/*
+		 * At this point only dl_se of RT tasks are present, plus we
+		 * should hold cpu_rq(i)->lock to call add_rq_bw() which is
+		 * overdoing.
+		 */
+		dl_rq->this_bw += dl_se->dl_bw;
+		printk_deferred("%s: dl_rq=%px this_bw=%llu running_bw=%llu\n",
+				__func__, dl_rq, dl_rq->this_bw, dl_rq->running_bw);
 
 		rt_b->rt_rq[i] = rt_rq;
 		rt_b->dl_se[i] = dl_se;
-		printk("%s: rt_b->rt_rq[%d]=%px rt_b->dl_se[%d]=%px\n",
-				__func__, i, rt_rq, i, dl_se);
 	}
 
 	return;
@@ -893,6 +905,7 @@ static void enqueue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
 	struct sched_dl_entity *dl_se;
 	unsigned int old_rt_nr_running;
 
+	lockdep_assert_held(&rq->lock);
 	BUG_ON(!rt_rq);
 	dl_se = dl_se_of_rt_rq(rt_rq);
 	old_rt_nr_running = rt_rq->rt_nr_running;
@@ -919,8 +932,11 @@ out:
 static void dequeue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
 {
 	struct rq *rq = rq_of_rt_se(rt_se);
-	struct rt_rq *rt_rq = rt_se->rt_rq;
-	struct sched_dl_entity *dl_se = dl_se_of_rt_rq(rt_rq);
+	struct rt_rq *rt_rq = rt_rq_of_se(rt_se);
+	struct sched_dl_entity *dl_se;
+
+	BUG_ON(!rt_rq);
+	dl_se = dl_se_of_rt_rq(rt_rq);
 
 	BUG_ON(!rq->nr_running);
 	sub_nr_running(rq, rt_rq->rt_nr_running);

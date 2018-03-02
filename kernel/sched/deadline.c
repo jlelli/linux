@@ -22,6 +22,8 @@
 
 struct dl_bandwidth def_dl_bandwidth;
 
+#define dl_entity_is_task(dl_se) (!(dl_se)->my_q)
+
 static inline struct task_struct *dl_task_of(struct sched_dl_entity *dl_se)
 {
 	return container_of(dl_se, struct task_struct, dl);
@@ -34,10 +36,15 @@ static inline struct rq *rq_of_dl_rq(struct dl_rq *dl_rq)
 
 static inline struct dl_rq *dl_rq_of_se(struct sched_dl_entity *dl_se)
 {
-	struct task_struct *p = dl_task_of(dl_se);
-	struct rq *rq = task_rq(p);
+	if (dl_entity_is_task(dl_se)) {
+		struct task_struct *p = dl_task_of(dl_se);
+		struct rq *rq = task_rq(p);
 
-	return &rq->dl;
+		return &rq->dl;
+	}
+
+	return dl_se->dl_rq;
+
 }
 
 static inline int on_dl_rq(struct sched_dl_entity *dl_se)
@@ -127,14 +134,12 @@ void __sub_rq_bw(u64 dl_bw, struct dl_rq *dl_rq)
 	SCHED_WARN_ON(dl_rq->running_bw > dl_rq->this_bw);
 }
 
-static inline
 void add_rq_bw(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq)
 {
 	if (!dl_entity_is_special(dl_se))
 		__add_rq_bw(dl_se->dl_bw, dl_rq);
 }
 
-static inline
 void sub_rq_bw(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq)
 {
 	if (!dl_entity_is_special(dl_se))
@@ -516,7 +521,12 @@ static void update_dl_migration(struct dl_rq *dl_rq)
 
 static void inc_dl_migration(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq)
 {
-	struct task_struct *p = dl_task_of(dl_se);
+	struct task_struct *p;
+
+	if (!dl_entity_is_task(dl_se))
+		return;
+
+	p = dl_task_of(dl_se);
 
 	if (p->nr_cpus_allowed > 1)
 		dl_rq->dl_nr_migratory++;
@@ -526,7 +536,12 @@ static void inc_dl_migration(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq)
 
 static void dec_dl_migration(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq)
 {
-	struct task_struct *p = dl_task_of(dl_se);
+	struct task_struct *p;
+
+	if (!dl_entity_is_task(dl_se))
+		return;
+
+	p = dl_task_of(dl_se);
 
 	if (p->nr_cpus_allowed > 1)
 		dl_rq->dl_nr_migratory--;
@@ -1423,12 +1438,15 @@ static inline void dec_dl_deadline(struct dl_rq *dl_rq, u64 deadline) {}
 static inline
 void inc_dl_tasks(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq)
 {
-	int prio = dl_task_of(dl_se)->prio;
+	int prio;
 	u64 deadline = dl_se->deadline;
 
-	WARN_ON(!dl_prio(prio));
-	dl_rq->dl_nr_running++;
-	add_nr_running(rq_of_dl_rq(dl_rq), 1);
+	if (dl_entity_is_task(dl_se)) {
+		prio = dl_task_of(dl_se)->prio;
+		WARN_ON(!dl_prio(prio));
+		dl_rq->dl_nr_running++;
+		add_nr_running(rq_of_dl_rq(dl_rq), 1);
+	}
 
 	inc_dl_deadline(dl_rq, deadline);
 	inc_dl_migration(dl_se, dl_rq);
@@ -1437,12 +1455,15 @@ void inc_dl_tasks(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq)
 static inline
 void dec_dl_tasks(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq)
 {
-	int prio = dl_task_of(dl_se)->prio;
+	int prio;
 
-	WARN_ON(!dl_prio(prio));
-	WARN_ON(!dl_rq->dl_nr_running);
-	dl_rq->dl_nr_running--;
-	sub_nr_running(rq_of_dl_rq(dl_rq), 1);
+	if (dl_entity_is_task(dl_se)) {
+		prio = dl_task_of(dl_se)->prio;
+		WARN_ON(!dl_prio(prio));
+		WARN_ON(!dl_rq->dl_nr_running);
+		dl_rq->dl_nr_running--;
+		sub_nr_running(rq_of_dl_rq(dl_rq), 1);
+	}
 
 	dec_dl_deadline(dl_rq, dl_se->deadline);
 	dec_dl_migration(dl_se, dl_rq);
