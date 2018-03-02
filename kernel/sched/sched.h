@@ -199,15 +199,6 @@ struct rt_prio_array {
 	struct list_head queue[MAX_RT_PRIO];
 };
 
-struct rt_bandwidth {
-	/* nests inside the rq lock: */
-	raw_spinlock_t		rt_runtime_lock;
-	ktime_t			rt_period;
-	u64			rt_runtime;
-	struct hrtimer		rt_period_timer;
-	unsigned int		rt_period_active;
-};
-
 void __dl_clear_params(struct task_struct *p);
 
 /*
@@ -234,6 +225,20 @@ struct dl_bandwidth {
 	u64 dl_runtime;
 	u64 dl_bw;
 	u64 dl_total_bw;
+};
+
+struct rt_bandwidth {
+	/* nests inside the rq lock: */
+	raw_spinlock_t rt_runtime_lock;
+	/* DL entities of this group, one on each CPU */
+	struct sched_dl_entity **dl_se;
+	/*
+	 * Each of the entities above "owns" a runqueue of RT tasks.
+	 * So, there's one *rt_rq for each CPU pointing to that runqueue.
+	 */
+	struct rt_rq **rt_rq;
+
+	struct dl_bandwidth dl_bandwidth;
 };
 
 static inline int dl_bandwidth_enabled(void)
@@ -278,6 +283,11 @@ extern int dl_task_can_attach(struct task_struct *p,
 extern int dl_cpuset_cpumask_can_shrink(const struct cpumask *cur,
 					const struct cpumask *trial);
 extern bool dl_cpu_busy(unsigned int cpu);
+extern void task_contending(struct sched_dl_entity *dl_se, int flags);
+extern void task_non_contending(struct task_struct *p);
+extern void enqueue_dl_entity(struct sched_dl_entity *dl_se,
+			      struct sched_dl_entity *pi_se, int flags);
+extern void dequeue_dl_entity(struct sched_dl_entity *dl_se);
 
 #ifdef CONFIG_CGROUP_SCHED
 
@@ -329,7 +339,12 @@ struct task_group {
 #endif
 
 #ifdef CONFIG_RT_GROUP_SCHED
-	struct sched_rt_entity **rt_se;
+	/* DL entities of this group, one on each CPU */
+	struct sched_dl_entity **dl_se;
+	/*
+	 * Each of the entities above "owns" a runqueue of RT tasks.
+	 * So, there's one *rt_rq for each CPU pointing to that runqueue.
+	 */
 	struct rt_rq **rt_rq;
 
 	struct rt_bandwidth rt_bandwidth;
@@ -561,20 +576,14 @@ struct rt_rq {
 	int overloaded;
 	struct plist_head pushable_tasks;
 #endif /* CONFIG_SMP */
-	int rt_queued;
-
-	int rt_throttled;
-	u64 rt_time;
-	u64 rt_runtime;
-	/* Nests inside the rq lock: */
-	raw_spinlock_t rt_runtime_lock;
 
 #ifdef CONFIG_RT_GROUP_SCHED
 	unsigned long rt_nr_boosted;
 
-	struct rq *rq;
 	struct task_group *tg;
 #endif
+	/* root "real" runqueue this rt_rq belongs to */
+	struct rq *rq;
 };
 
 /* Deadline class' related fields in a runqueue */
@@ -1559,8 +1568,8 @@ extern void reweight_task(struct task_struct *p, int prio);
 extern void resched_curr(struct rq *rq);
 extern void resched_cpu(int cpu);
 
-extern struct rt_bandwidth def_rt_bandwidth;
-extern void init_rt_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtime);
+extern struct rt_bandwidth pha_rt_bandwidth;
+extern void init_phantom_rt_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtime);
 
 extern struct dl_bandwidth def_dl_bandwidth;
 extern void init_dl_bandwidth(struct dl_bandwidth *dl_b, u64 period, u64 runtime);

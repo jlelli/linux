@@ -421,12 +421,14 @@ struct sched_rt_entity {
 
 	struct sched_rt_entity		*back;
 #ifdef CONFIG_RT_GROUP_SCHED
-	struct sched_rt_entity		*parent;
+	/*
+	 * RT entities can only reside in leaf groups, which are handled by a
+	 * DL entity.
+	 */
+	struct sched_dl_entity		*parent;
+#endif
 	/* rq on which this entity is (to be) queued: */
 	struct rt_rq			*rt_rq;
-	/* rq "owned" by this entity/group: */
-	struct rt_rq			*my_q;
-#endif
 } __randomize_layout;
 
 struct sched_dl_entity {
@@ -496,6 +498,17 @@ struct sched_dl_entity {
 	 * time.
 	 */
 	struct hrtimer inactive_timer;
+
+	/*
+	 * An instance of a sched_dl_entity may represent a group of tasks,
+	 * therefore it requires:
+	 *
+	 * @dl_rq the rq on which this entity is queued.
+	 *
+	 * @rt_rq the rq owned by this entity.
+	 */
+	struct dl_rq			*dl_rq;
+	struct rt_rq			*my_q;
 };
 
 union rcu_special {

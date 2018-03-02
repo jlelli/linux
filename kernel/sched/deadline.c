@@ -236,7 +236,7 @@ void dl_change_utilization(struct task_struct *p, u64 new_bw)
  * up, and checks if the task is still in the "ACTIVE non contending"
  * state or not (in the second case, it updates running_bw).
  */
-static void task_non_contending(struct task_struct *p)
+void task_non_contending(struct task_struct *p)
 {
 	struct sched_dl_entity *dl_se = &p->dl;
 	struct hrtimer *timer = &dl_se->inactive_timer;
@@ -293,7 +293,7 @@ static void task_non_contending(struct task_struct *p)
 	hrtimer_start(timer, ns_to_ktime(zerolag_time), HRTIMER_MODE_REL);
 }
 
-static void task_contending(struct sched_dl_entity *dl_se, int flags)
+void task_contending(struct sched_dl_entity *dl_se, int flags)
 {
 	struct dl_rq *dl_rq = dl_rq_of_se(dl_se);
 
@@ -1318,40 +1318,6 @@ throttle:
 		if (!is_leftmost(curr, &rq->dl))
 			resched_curr(rq);
 	}
-
-	/*
-	 * Because -- for now -- we share the rt bandwidth, we need to
-	 * account our runtime there too, otherwise actual rt tasks
-	 * would be able to exceed the shared quota.
-	 *
-	 * Account to curr's group, or the root rt group if group scheduling
-	 * is not in use. XXX if RT_RUNTIME_SHARE is enabled we should
-	 * probably split accounting between all rd rt_rq(s), but locking is
-	 * ugly. :/
-	 *
-	 * The solution we're working towards is having the RT groups scheduled
-	 * using deadline servers -- however there's a few nasties to figure
-	 * out before that can happen.
-	 */
-	if (rt_bandwidth_enabled()) {
-#ifdef CONFIG_RT_GROUP_SCHED
-		struct rt_bandwidth *rt_b =
-			sched_rt_bandwidth_tg(task_group(curr));
-		struct rt_rq *rt_rq = sched_rt_period_rt_rq(rt_b, cpu_of(rq));
-#else
-		struct rt_rq *rt_rq = &rq->rt;
-#endif /* CONFIG_RT_GROUP_SCHED */
-
-		raw_spin_lock(&rt_rq->rt_runtime_lock);
-		/*
-		 * We'll let actual RT tasks worry about the overflow here, we
-		 * have our own CBS to keep us inline; only account when RT
-		 * bandwidth is relevant.
-		 */
-		if (sched_rt_bandwidth_account(rt_rq))
-			rt_rq->rt_time += delta_exec;
-		raw_spin_unlock(&rt_rq->rt_runtime_lock);
-	}
 }
 
 static enum hrtimer_restart inactive_task_timer(struct hrtimer *timer)
@@ -1522,9 +1488,8 @@ static void __dequeue_dl_entity(struct sched_dl_entity *dl_se)
 	dec_dl_tasks(dl_se, dl_rq);
 }
 
-static void
-enqueue_dl_entity(struct sched_dl_entity *dl_se,
-		  struct sched_dl_entity *pi_se, int flags)
+void enqueue_dl_entity(struct sched_dl_entity *dl_se,
+		       struct sched_dl_entity *pi_se, int flags)
 {
 	BUG_ON(on_dl_rq(dl_se));
 
@@ -1547,7 +1512,7 @@ enqueue_dl_entity(struct sched_dl_entity *dl_se,
 	__enqueue_dl_entity(dl_se);
 }
 
-static void dequeue_dl_entity(struct sched_dl_entity *dl_se)
+void dequeue_dl_entity(struct sched_dl_entity *dl_se)
 {
 	__dequeue_dl_entity(dl_se);
 }

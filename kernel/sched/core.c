@@ -6003,7 +6003,7 @@ void __init sched_init(void)
 	}
 #endif /* CONFIG_CPUMASK_OFFSTACK */
 
-	init_rt_bandwidth(&def_rt_bandwidth, global_rt_period(), global_rt_runtime());
+	init_phantom_rt_bandwidth(&pha_rt_bandwidth, global_rt_period(), global_rt_runtime());
 	init_dl_bandwidth(&def_dl_bandwidth, global_rt_period(), global_rt_runtime());
 
 #ifdef CONFIG_SMP
@@ -6011,7 +6011,7 @@ void __init sched_init(void)
 #endif
 
 #ifdef CONFIG_RT_GROUP_SCHED
-	init_rt_bandwidth(&root_task_group.rt_bandwidth,
+	init_phantom_rt_bandwidth(&root_task_group.phantom_rt_bandwidth,
 			global_rt_period(), global_rt_runtime());
 	init_dl_bandwidth(&root_task_group.dl_bandwidth,
 			global_rt_period(), global_rt_runtime());
@@ -6065,7 +6065,6 @@ void __init sched_init(void)
 		init_tg_cfs_entry(&root_task_group, &rq->cfs, NULL, i, NULL);
 #endif /* CONFIG_FAIR_GROUP_SCHED */
 
-		rq->rt.rt_runtime = def_rt_bandwidth.rt_runtime;
 #ifdef CONFIG_RT_GROUP_SCHED
 		init_tg_rt_entry(&root_task_group, &rq->rt, NULL, i, NULL);
 #endif
