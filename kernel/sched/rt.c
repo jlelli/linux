@@ -50,8 +50,8 @@ void init_phantom_rt_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtim
 		rt_rq->rq = cpu_rq(i);
 
 		RB_CLEAR_NODE(&dl_se->rb_node);
-		init_dl_task_timer(dl_se);
-		init_dl_inactive_task_timer(dl_se);
+		init_dl_enforcement_timer(dl_se);
+		init_dl_inactive_timer(dl_se);
 		dl_se->dl_runtime = rt_b->dl_bandwidth.dl_runtime;
 		dl_se->dl_period = rt_b->dl_bandwidth.dl_period;
 		dl_se->dl_deadline = dl_se->dl_period;
@@ -207,7 +207,8 @@ int alloc_rt_sched_group(struct task_group *tg, struct task_group *parent)
 		init_rt_rq(rt_rq);
 		rt_rq->rt_runtime = tg->rt_bandwidth.rt_runtime;
 
-		init_dl_task_timer(dl_se);
+		init_dl_enforcement_timer(dl_se);
+		init_dl_inactive_timer(dl_se);
 		dl_se->dl_runtime = tg->dl_bandwidth.dl_runtime;
 		dl_se->dl_period = tg->dl_bandwidth.dl_period;
 		dl_se->dl_deadline = dl_se->dl_period;

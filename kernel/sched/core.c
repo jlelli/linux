@@ -2186,8 +2186,8 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 #endif
 
 	RB_CLEAR_NODE(&p->dl.rb_node);
-	init_dl_task_timer(&p->dl);
-	init_dl_inactive_task_timer(&p->dl);
+	init_dl_enforcement_timer(&p->dl);
+	init_dl_inactive_timer(&p->dl);
 	__dl_clear_params(p);
 
 	INIT_LIST_HEAD(&p->rt.run_list);

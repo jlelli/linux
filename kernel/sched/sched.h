@@ -1575,8 +1575,8 @@ extern void init_phantom_rt_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64
 
 extern struct dl_bandwidth def_dl_bandwidth;
 extern void init_dl_bandwidth(struct dl_bandwidth *dl_b, u64 period, u64 runtime);
-extern void init_dl_task_timer(struct sched_dl_entity *dl_se);
-extern void init_dl_inactive_task_timer(struct sched_dl_entity *dl_se);
+extern void init_dl_enforcement_timer(struct sched_dl_entity *dl_se);
+extern void init_dl_inactive_timer(struct sched_dl_entity *dl_se);
 extern void init_dl_rq_bw_ratio(struct dl_rq *dl_rq);
 
 #define BW_SHIFT	20
