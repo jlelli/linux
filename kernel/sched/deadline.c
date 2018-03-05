@@ -232,18 +232,18 @@ void dl_change_utilization(struct task_struct *p, u64 new_bw)
  *            inactive timer    |  non contending  |
  *            fired             +------------------+
  *
- * The task_non_contending() function is invoked when a task
- * blocks, and checks if the 0-lag time already passed or
- * not (in the first case, it directly updates running_bw;
- * in the second case, it arms the inactive timer).
+ * The dl_entity_non_contending() function is invoked when a task (or last
+ * task of a group) blocks, and checks if the 0-lag time already passed or not
+ * (in the first case, it directly updates running_bw; in the second case, it
+ * arms the inactive timer).
  *
- * The task_contending() function is invoked when a task wakes
- * up, and checks if the task is still in the "ACTIVE non contending"
- * state or not (in the second case, it updates running_bw).
+ * The dl_entity_contending() function is invoked when a task (or first task
+ * of a group) wakes up, and checks if the task is still in the "ACTIVE non
+ * contending" state or not (in the second case, it updates running_bw).
  */
-void task_non_contending(struct task_struct *p)
+void dl_entity_non_contending(struct sched_dl_entity *dl_se)
 {
-	struct sched_dl_entity *dl_se = &p->dl;
+	bool entity_is_task = dl_entity_is_task(dl_se);
 	struct hrtimer *timer = &dl_se->inactive_timer;
 	struct dl_rq *dl_rq = dl_rq_of_se(dl_se);
 	struct rq *rq = rq_of_dl_rq(dl_rq);
@@ -277,28 +277,41 @@ void task_non_contending(struct task_struct *p)
 	 * utilization now, instead of starting a timer
 	 */
 	if (zerolag_time < 0) {
-		if (dl_task(p))
-			sub_running_bw(dl_se, dl_rq);
-		if (!dl_task(p) || p->state == TASK_DEAD) {
-			struct dl_bandwidth *dl_b = dl_bw_of(task_cpu(p));
+		if (entity_is_task) {
+			struct task_struct *p = dl_task_of(dl_se);
 
-			if (p->state == TASK_DEAD)
-				sub_rq_bw(&p->dl, &rq->dl);
-			raw_spin_lock(&dl_b->dl_runtime_lock);
-			__dl_sub(dl_b, p->dl.dl_bw, dl_bw_cpus(task_cpu(p)));
-			__dl_clear_params(p);
-			raw_spin_unlock(&dl_b->dl_runtime_lock);
+			if (dl_task(p))
+				sub_running_bw(dl_se, dl_rq);
+			if (!dl_task(p) || p->state == TASK_DEAD) {
+				struct dl_bandwidth *dl_b = dl_bw_of(task_cpu(p));
+
+				if (p->state == TASK_DEAD)
+					sub_rq_bw(&p->dl, &rq->dl);
+				raw_spin_lock(&dl_b->dl_runtime_lock);
+				__dl_sub(dl_b, p->dl.dl_bw, dl_bw_cpus(task_cpu(p)));
+				__dl_clear_params(p);
+				raw_spin_unlock(&dl_b->dl_runtime_lock);
+			}
+		} else {
+			sub_running_bw(dl_se, dl_rq);
 		}
 
 		return;
 	}
 
 	dl_se->dl_non_contending = 1;
-	get_task_struct(p);
+
+	/*
+	 * pha_rt_bandwidth entities cannot go away
+	 * XXX need to figure out how to deal with task_groups
+	 */
+	if (entity_is_task)
+		get_task_struct(dl_task_of(dl_se));
+
 	hrtimer_start(timer, ns_to_ktime(zerolag_time), HRTIMER_MODE_REL);
 }
 
-void task_contending(struct sched_dl_entity *dl_se, int flags)
+void dl_entity_contending(struct sched_dl_entity *dl_se, int flags)
 {
 	struct dl_rq *dl_rq = dl_rq_of_se(dl_se);
 
@@ -1335,7 +1348,7 @@ throttle:
 	}
 }
 
-static enum hrtimer_restart inactive_task_timer(struct hrtimer *timer)
+static enum hrtimer_restart inactive_dl_timer(struct hrtimer *timer)
 {
 	struct sched_dl_entity *dl_se = container_of(timer,
 						     struct sched_dl_entity,
@@ -1520,7 +1533,7 @@ void enqueue_dl_entity(struct sched_dl_entity *dl_se,
 	 * we want a replenishment of its runtime.
 	 */
 	if (flags & ENQUEUE_WAKEUP) {
-		task_contending(dl_se, flags);
+		dl_entity_contending(dl_se, flags);
 		update_dl_entity(dl_se, pi_se);
 	} else if (flags & ENQUEUE_REPLENISH) {
 		replenish_dl_entity(dl_se, pi_se);
@@ -1593,7 +1606,7 @@ static void enqueue_task_dl(struct rq *rq, struct task_struct *p, int flags)
 	 */
 	if (p->dl.dl_throttled && !(flags & ENQUEUE_REPLENISH)) {
 		if (flags & ENQUEUE_WAKEUP)
-			task_contending(&p->dl, flags);
+			dl_entity_contending(&p->dl, flags);
 
 		return;
 	}
@@ -1630,7 +1643,7 @@ static void dequeue_task_dl(struct rq *rq, struct task_struct *p, int flags)
 	 * or "inactive")
 	 */
 	if (flags & DEQUEUE_SLEEP)
-		task_non_contending(p);
+		dl_entity_non_contending(&p->dl);
 }
 
 /*
@@ -2380,7 +2393,7 @@ void __init init_sched_dl_class(void)
 static void switched_from_dl(struct rq *rq, struct task_struct *p)
 {
 	/*
-	 * task_non_contending() can start the "inactive timer" (if the 0-lag
+	 * dl_entity_non_contending() can start the "inactive timer" (if the 0-lag
 	 * time is in the future). If the task switches back to dl before
 	 * the "inactive timer" fires, it can continue to consume its current
 	 * runtime using its current deadline. If it stays outside of
@@ -2388,7 +2401,7 @@ static void switched_from_dl(struct rq *rq, struct task_struct *p)
 	 * will reset the task parameters.
 	 */
 	if (task_on_rq_queued(p) && p->dl.dl_runtime)
-		task_non_contending(p);
+		dl_entity_non_contending(&p->dl);
 
 	if (!task_on_rq_queued(p))
 		sub_rq_bw(&p->dl, &rq->dl);

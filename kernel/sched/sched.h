@@ -283,8 +283,8 @@ extern int dl_task_can_attach(struct task_struct *p,
 extern int dl_cpuset_cpumask_can_shrink(const struct cpumask *cur,
 					const struct cpumask *trial);
 extern bool dl_cpu_busy(unsigned int cpu);
-extern void task_contending(struct sched_dl_entity *dl_se, int flags);
-extern void task_non_contending(struct task_struct *p);
+extern void dl_entity_contending(struct sched_dl_entity *dl_se, int flags);
+extern void dl_entity_non_contending(struct sched_dl_entity *dl_se);
 extern void enqueue_dl_entity(struct sched_dl_entity *dl_se,
 			      struct sched_dl_entity *pi_se, int flags);
 extern void dequeue_dl_entity(struct sched_dl_entity *dl_se);

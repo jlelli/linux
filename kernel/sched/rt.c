@@ -51,6 +51,7 @@ void init_phantom_rt_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtim
 
 		RB_CLEAR_NODE(&dl_se->rb_node);
 		init_dl_task_timer(dl_se);
+		init_dl_inactive_task_timer(dl_se);
 		dl_se->dl_runtime = rt_b->dl_bandwidth.dl_runtime;
 		dl_se->dl_period = rt_b->dl_bandwidth.dl_period;
 		dl_se->dl_deadline = dl_se->dl_period;
@@ -920,7 +921,7 @@ static void enqueue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
 		goto out;
 
 	if (dl_se->dl_throttled && (flags & ENQUEUE_WAKEUP)) {
-		task_contending(dl_se, flags);
+		dl_entity_contending(dl_se, flags);
 		goto out;
 	}
 
@@ -954,7 +955,7 @@ static void dequeue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
 	 */
 	if (!rt_rq->rt_nr_running) {
 		if (flags & DEQUEUE_SLEEP)
-			task_non_contending(rt_task_of(rt_se));
+			dl_entity_non_contending(dl_se);
 
 		dequeue_dl_entity(dl_se);
 	}
