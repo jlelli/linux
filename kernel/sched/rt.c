@@ -59,17 +59,13 @@ void init_phantom_rt_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtim
 		dl_se->dl_density = to_ratio(dl_se->dl_deadline, dl_se->dl_runtime);
 		dl_se->my_q = rt_rq;
 		dl_se->dl_rq = dl_rq;
-		printk_deferred("%s: dl_se=%px dl_runtime=%llu dl_period=%llu dl_bw=%llu\n",
-				__func__, &dl_se, dl_se->dl_runtime,
-				dl_se->dl_period, dl_se->dl_bw);
+
 		/*
 		 * At this point only dl_se of RT tasks are present, plus we
 		 * should hold cpu_rq(i)->lock to call add_rq_bw() which is
 		 * overdoing.
 		 */
 		dl_rq->this_bw += dl_se->dl_bw;
-		printk_deferred("%s: dl_rq=%px this_bw=%llu running_bw=%llu\n",
-				__func__, dl_rq, dl_rq->this_bw, dl_rq->running_bw);
 
 		rt_b->rt_rq[i] = rt_rq;
 		rt_b->dl_se[i] = dl_se;
@@ -230,11 +226,6 @@ err:
 
 #define rt_entity_is_task(rt_se) (1)
 
-static inline struct task_struct *rt_task_of(struct sched_rt_entity *rt_se)
-{
-	return container_of(rt_se, struct task_struct, rt);
-}
-
 static inline struct rq *rq_of_rt_se(struct sched_rt_entity *rt_se)
 {
 	struct task_struct *p = rt_task_of(rt_se);
@@ -389,7 +380,7 @@ static void enqueue_pushable_task(struct rq *rq, struct task_struct *p)
 		rq->rt.highest_prio.next = p->prio;
 }
 
-static void dequeue_pushable_task(struct rq *rq, struct task_struct *p)
+void dequeue_pushable_task(struct rq *rq, struct task_struct *p)
 {
 	plist_del(&p->pushable_tasks, &rq->rt.pushable_tasks);
 
@@ -926,6 +917,12 @@ static void enqueue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
 		goto out;
 	}
 
+	/*
+	 * First task becoming RT
+	 */
+	if (flags & ENQUEUE_RESTORE)
+		add_running_bw(dl_se, &rq->dl);
+
 	enqueue_dl_entity(dl_se, dl_se, flags);
 out:
 	add_nr_running(rq, rt_rq->rt_nr_running);
@@ -941,6 +938,7 @@ static void dequeue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
 	dl_se = dl_se_of_rt_rq(rt_rq);
 
 	BUG_ON(!rq->nr_running);
+	BUG_ON(!rt_rq->rt_nr_running);
 	sub_nr_running(rq, rt_rq->rt_nr_running);
 
 	__dequeue_rt_entity(rt_se, flags);
@@ -955,12 +953,15 @@ static void dequeue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
 	 * See also deadline.c::dequeue_task_dl.
 	 */
 	if (!rt_rq->rt_nr_running) {
+		dequeue_dl_entity(dl_se);
+		/*
+		 * Last task left RT
+		 */
+		if (flags & DEQUEUE_SAVE)
+			sub_running_bw(dl_se, &rq->dl);
 		if (flags & DEQUEUE_SLEEP)
 			dl_entity_non_contending(dl_se);
-
-		dequeue_dl_entity(dl_se);
 	}
-
 }
 
 /*
@@ -1140,8 +1141,8 @@ static void check_preempt_curr_rt(struct rq *rq, struct task_struct *p, int flag
 #endif
 }
 
-static struct sched_rt_entity *pick_next_rt_entity(struct rq *rq,
-						   struct rt_rq *rt_rq)
+struct sched_rt_entity *pick_next_rt_entity(struct rq *rq,
+					    struct rt_rq *rt_rq)
 {
 	struct rt_prio_array *array = &rt_rq->active;
 	struct sched_rt_entity *next = NULL;

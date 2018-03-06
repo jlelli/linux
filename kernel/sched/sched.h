@@ -241,6 +241,16 @@ struct rt_bandwidth {
 	struct dl_bandwidth dl_bandwidth;
 };
 
+extern
+struct sched_rt_entity *pick_next_rt_entity(struct rq *rq,
+					    struct rt_rq *rt_rq);
+extern void dequeue_pushable_task(struct rq *rq, struct task_struct *p);
+
+static inline struct task_struct *rt_task_of(struct sched_rt_entity *rt_se)
+{
+	return container_of(rt_se, struct task_struct, rt);
+}
+
 static inline int dl_bandwidth_enabled(void)
 {
 	return sysctl_sched_rt_runtime >= 0;
@@ -290,6 +300,8 @@ extern void enqueue_dl_entity(struct sched_dl_entity *dl_se,
 extern void dequeue_dl_entity(struct sched_dl_entity *dl_se);
 extern void add_rq_bw(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq);
 extern void sub_rq_bw(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq);
+extern void add_running_bw(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq);
+extern void sub_running_bw(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq);
 
 #ifdef CONFIG_CGROUP_SCHED
 

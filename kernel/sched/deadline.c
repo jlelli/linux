@@ -147,14 +147,12 @@ void sub_rq_bw(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq)
 		__sub_rq_bw(dl_se->dl_bw, dl_rq);
 }
 
-static inline
 void add_running_bw(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq)
 {
 	if (!dl_entity_is_special(dl_se))
 		__add_running_bw(dl_se->dl_bw, dl_rq);
 }
 
-static inline
 void sub_running_bw(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq)
 {
 	if (!dl_entity_is_special(dl_se))
@@ -335,8 +333,10 @@ void dl_entity_contending(struct sched_dl_entity *dl_se, int flags)
 		 * will not touch the rq's active utilization,
 		 * so we are still safe.
 		 */
-		if (hrtimer_try_to_cancel(&dl_se->inactive_timer) == 1)
-			put_task_struct(dl_task_of(dl_se));
+		if (hrtimer_try_to_cancel(&dl_se->inactive_timer) == 1) {
+			if (dl_entity_is_task(dl_se))
+				put_task_struct(dl_task_of(dl_se));
+		}
 	} else {
 		/*
 		 * Since "dl_non_contending" is not set, the
@@ -1505,9 +1505,10 @@ void inc_dl_tasks(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq)
 	if (dl_entity_is_task(dl_se)) {
 		prio = dl_task_of(dl_se)->prio;
 		WARN_ON(!dl_prio(prio));
-		dl_rq->dl_nr_running++;
-		add_nr_running(rq_of_dl_rq(dl_rq), 1);
 	}
+
+	dl_rq->dl_nr_running++;
+	add_nr_running(rq_of_dl_rq(dl_rq), 1);
 
 	inc_dl_deadline(dl_rq, deadline);
 	inc_dl_migration(dl_se, dl_rq);
@@ -1522,9 +1523,10 @@ void dec_dl_tasks(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq)
 		prio = dl_task_of(dl_se)->prio;
 		WARN_ON(!dl_prio(prio));
 		WARN_ON(!dl_rq->dl_nr_running);
-		dl_rq->dl_nr_running--;
-		sub_nr_running(rq_of_dl_rq(dl_rq), 1);
 	}
+
+	dl_rq->dl_nr_running--;
+	sub_nr_running(rq_of_dl_rq(dl_rq), 1);
 
 	dec_dl_deadline(dl_rq, dl_se->deadline);
 	dec_dl_migration(dl_se, dl_rq);
@@ -1847,12 +1849,12 @@ static void check_preempt_curr_dl(struct rq *rq, struct task_struct *p,
 }
 
 #ifdef CONFIG_SCHED_HRTICK
-static void start_hrtick_dl(struct rq *rq, struct task_struct *p)
+static void start_hrtick_dl(struct rq *rq, struct sched_dl_entity *dl_se)
 {
-	hrtick_start(rq, p->dl.runtime);
+	hrtick_start(rq, dl_se->runtime);
 }
 #else /* !CONFIG_SCHED_HRTICK */
-static void start_hrtick_dl(struct rq *rq, struct task_struct *p)
+static void start_hrtick_dl(struct rq *rq, struct sched_dl_entity *dl_se)
 {
 }
 #endif
@@ -1911,6 +1913,23 @@ pick_next_task_dl(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	dl_se = pick_next_dl_entity(rq, dl_rq);
 	BUG_ON(!dl_se);
 
+	if (!dl_entity_is_task(dl_se)) {
+		struct rt_rq *rt_rq = rt_rq_of_dl_se(dl_se);
+		struct sched_rt_entity *rt_se;
+
+		rt_se = pick_next_rt_entity(rq, rt_rq);
+		BUG_ON(!rt_se);
+		p = rt_task_of(rt_se);
+		p->se.exec_start = rq_clock_task(rq);
+
+		dequeue_pushable_task(rq, p);
+
+		if (hrtick_enabled(rq))
+			start_hrtick_dl(rq, dl_se);
+
+		return p;
+	}
+
 	p = dl_task_of(dl_se);
 	p->se.exec_start = rq_clock_task(rq);
 
@@ -1918,7 +1937,7 @@ pick_next_task_dl(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
        dequeue_pushable_dl_task(rq, p);
 
 	if (hrtick_enabled(rq))
-		start_hrtick_dl(rq, p);
+		start_hrtick_dl(rq, &p->dl);
 
 	queue_push_tasks(rq);
 
@@ -1952,7 +1971,7 @@ static void task_tick_dl(struct rq *rq, struct task_struct *p, int queued)
 	 */
 	if (hrtick_enabled(rq) && queued && p->dl.runtime > 0 &&
 	    is_leftmost(p, &rq->dl))
-		start_hrtick_dl(rq, p);
+		start_hrtick_dl(rq, &p->dl);
 }
 
 static void task_fork_dl(struct task_struct *p)
