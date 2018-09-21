@@ -979,6 +979,7 @@ __mutex_lock_common(struct mutex *lock, long state, unsigned int subclass,
 	}
 
 	waiter.task = current;
+	current->blocked_on = lock;
 
 	set_current_state(state);
 	for (;;) {
@@ -1047,6 +1048,8 @@ acquired:
 	}
 
 	mutex_remove_waiter(lock, &waiter, current);
+	current->blocked_on = NULL;
+
 	if (likely(list_empty(&lock->wait_list)))
 		__mutex_clear_flag(lock, MUTEX_FLAGS);
 
