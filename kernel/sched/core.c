@@ -247,12 +247,13 @@ static enum hrtimer_restart hrtick(struct hrtimer *timer)
 {
 	struct rq *rq = container_of(timer, struct rq, hrtick_timer);
 	struct rq_flags rf;
+	struct task_struct *curr = rq->proxy;
 
 	WARN_ON_ONCE(cpu_of(rq) != smp_processor_id());
 
 	rq_lock(rq, &rf);
 	update_rq_clock(rq);
-	rq->curr->sched_class->task_tick(rq, rq->curr, 1);
+	curr->sched_class->task_tick(rq, curr, 1);
 	rq_unlock(rq, &rf);
 
 	return HRTIMER_NORESTART;
@@ -1410,13 +1411,18 @@ static inline void check_class_changed(struct rq *rq, struct task_struct *p,
 
 void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
 {
+	struct task_struct *curr = rq->proxy;
 	const struct sched_class *class;
 
-	if (p->sched_class == rq->curr->sched_class) {
-		rq->curr->sched_class->check_preempt_curr(rq, p, flags);
+	if (p->sched_class == curr->sched_class) {
+		/*
+		 * XXX check_preempt_curr will check rq->curr against p, looks
+		 * like we want to check rq->proxy against p though?
+		 */
+		curr->sched_class->check_preempt_curr(rq, p, flags);
 	} else {
 		for_each_class(class) {
-			if (class == rq->curr->sched_class)
+			if (class == curr->sched_class)
 				break;
 			if (class == p->sched_class) {
 				resched_curr(rq);
@@ -1429,7 +1435,7 @@ void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
 	 * A queue event has occurred, and we're going to schedule.  In
 	 * this case, we can save a useless back to back clock update.
 	 */
-	if (task_on_rq_queued(rq->curr) && test_tsk_need_resched(rq->curr))
+	if (task_on_rq_queued(curr) && test_tsk_need_resched(rq->curr))
 		rq_clock_skip_update(rq);
 }
 
@@ -1579,7 +1585,11 @@ void do_set_cpus_allowed(struct task_struct *p, const struct cpumask *new_mask)
 	lockdep_assert_held(&p->pi_lock);
 
 	queued = task_on_rq_queued(p);
-	running = task_current(rq, p);
+	/*
+	 * XXX is changing affinity of a proxy a problem?
+	 * Consider for example put_prev_ set_curr_ below...
+	 */
+	running = task_current_proxy(rq, p);
 
 	if (queued) {
 		/*
@@ -3617,7 +3627,7 @@ unsigned long long task_sched_runtime(struct task_struct *p)
 	 * project cycles that may never be accounted to this
 	 * thread, breaking clock_gettime().
 	 */
-	if (task_current(rq, p) && task_on_rq_queued(p)) {
+	if (task_current_proxy(rq, p) && task_on_rq_queued(p)) {
 		prefetch_curr_exec_start(p);
 		update_rq_clock(rq);
 		p->sched_class->update_curr(rq);
@@ -3647,9 +3657,10 @@ void scheduler_tick(void)
 {
 	int cpu = smp_processor_id();
 	struct rq *rq = cpu_rq(cpu);
-	struct task_struct *curr = rq->curr;
 	struct rq_flags rf;
 	unsigned long thermal_pressure;
+	/* accounting goes to the proxy task */
+	struct task_struct *curr = rq->proxy;
 
 	arch_scale_freq_tick();
 	sched_clock_tick();
@@ -3735,6 +3746,13 @@ static void sched_tick_remote(struct work_struct *work)
 	curr = rq->curr;
 	if (cpu_is_offline(cpu))
 		goto out_unlock;
+
+	/*
+	 * XXX don't we need to account to rq->proxy?
+	 * Maybe, since this is a remote tick for full dynticks mode, we are
+	 * always sure that there is no proxy (only a single task is running.
+	 */
+	SCHED_WARN_ON(rq->curr != rq->proxy);
 
 	update_rq_clock(rq);
 
@@ -4514,7 +4532,10 @@ void rt_mutex_setprio(struct task_struct *p, struct task_struct *pi_task)
 
 	prev_class = p->sched_class;
 	queued = task_on_rq_queued(p);
-	running = task_current(rq, p);
+	/*
+	 * XXX how does (proxy exec) mutexes and RT_mutexes work together?!
+	 */
+	running = task_current_proxy(rq, p);
 	if (queued)
 		dequeue_task(rq, p, queue_flag);
 	if (running)
@@ -4601,7 +4622,10 @@ void set_user_nice(struct task_struct *p, long nice)
 		goto out_unlock;
 	}
 	queued = task_on_rq_queued(p);
-	running = task_current(rq, p);
+	/*
+	 * XXX see concerns about do_set_cpus_allowed, rt_mutex_prio & Co.
+	 */
+	running = task_current_proxy(rq, p);
 	if (queued)
 		dequeue_task(rq, p, DEQUEUE_SAVE | DEQUEUE_NOCLOCK);
 	if (running)
@@ -5048,7 +5072,10 @@ change:
 	}
 
 	queued = task_on_rq_queued(p);
-	running = task_current(rq, p);
+	/*
+	 * XXX and again, how is this safe w.r.t. proxy exec?
+	 */
+	running = task_current_proxy(rq, p);
 	if (queued)
 		dequeue_task(rq, p, queue_flags);
 	if (running)
@@ -5668,6 +5695,11 @@ static void do_sched_yield(void)
 	rq = this_rq_lock_irq(&rf);
 
 	schedstat_inc(rq->yld_count);
+	/*
+	 * XXX how about proxy exec?
+	 * If a task currently proxied by some other task yields, should we
+	 * apply the proxy or the current yield "behaviour" ?
+	 */
 	current->sched_class->yield_task(rq);
 
 	/*
@@ -5774,6 +5806,10 @@ EXPORT_SYMBOL(yield);
  */
 int __sched yield_to(struct task_struct *p, bool preempt)
 {
+	/*
+	 * XXX what about current being proxied?
+	 * Should we use proxy->sched_class methods in this case?
+	 */
 	struct task_struct *curr = current;
 	struct rq *rq, *p_rq;
 	unsigned long flags;
@@ -6233,7 +6269,7 @@ void sched_setnuma(struct task_struct *p, int nid)
 
 	rq = task_rq_lock(p, &rf);
 	queued = task_on_rq_queued(p);
-	running = task_current(rq, p);
+	running = task_current_proxy(rq, p);
 
 	if (queued)
 		dequeue_task(rq, p, DEQUEUE_SAVE);
@@ -7124,7 +7160,7 @@ void sched_move_task(struct task_struct *tsk)
 	rq = task_rq_lock(tsk, &rf);
 	update_rq_clock(rq);
 
-	running = task_current(rq, tsk);
+	running = task_current_proxy(rq, tsk);
 	queued = task_on_rq_queued(tsk);
 
 	if (queued)
