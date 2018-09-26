@@ -2254,7 +2254,30 @@ ttwu_do_activate(struct rq *rq, struct task_struct *p, int wake_flags,
 		en_flags |= ENQUEUE_MIGRATED;
 #endif
 
+	/*
+	 * XXX can we possibly avoid the spinlock ? See proxy()'s blocked_task
+	 * case.
+	 */
+	raw_spin_lock(&p->blocked_lock);
 	activate_task(rq, p, en_flags);
+
+	/*
+	 * A whole bunch of 'proxy' tasks back this blocked task, wake
+	 * them all up to give this task its 'fair' share.
+	 */
+	while (!list_empty(&p->blocked_entry)) {
+		struct task_struct *pp =
+			list_first_entry(&p->blocked_entry,
+					 struct task_struct,
+					 blocked_entry);
+
+		list_del_init(&pp->blocked_entry);
+		activate_task(rq, pp, en_flags);
+		pp->on_rq = TASK_ON_RQ_QUEUED;
+		resched_curr(rq);
+	}
+	raw_spin_unlock(&p->blocked_lock);
+
 	ttwu_do_wakeup(rq, p, wake_flags, rf);
 }
 
@@ -2271,12 +2294,46 @@ static int ttwu_remote(struct task_struct *p, int wake_flags)
 	int ret = 0;
 
 	rq = __task_rq_lock(p, &rf);
-	if (task_on_rq_queued(p)) {
-		/* check_preempt_curr() may use rq clock */
-		update_rq_clock(rq);
-		ttwu_do_wakeup(rq, p, wake_flags, &rf);
-		ret = 1;
+	if (!task_on_rq_queued(p)) {
+		BUG_ON(p->state == TASK_RUNNING);
+		goto out_unlock;
 	}
+
+	/*
+	 * ttwu_do_wakeup()->
+	 *   check_preempt_curr() may use rq clock
+	 */
+	update_rq_clock(rq);
+
+	/*
+	 * Since we don't dequeue for blocked-on relations, we'll always
+	 * trigger the on_rq_queued() clause for them.
+	 */
+	if (task_is_blocked(p)) {
+		p->blocked_on = NULL; /* let it run again */
+		if (!cpumask_test_cpu(cpu_of(rq), &p->cpus_allowed)) {
+			/*
+			 * proxy stuff moved us outside of the affinity mask
+			 * 'sleep' now and fail the direct wakeup so that the
+			 * normal wakeup path will fix things.
+			 */
+			p->on_rq = 0;
+			/* XXX [juril] SLEEP|NOCLOCK ? */
+			deactivate_task(rq, p, DEQUEUE_SLEEP);
+			goto out_unlock;
+		}
+
+		/*
+		 * Must resched after killing a blocked_on relation. The currently
+		 * executing context might not be the most elegible anymore.
+		 */
+		resched_curr(rq);
+	}
+
+	ttwu_do_wakeup(rq, p, wake_flags, &rf);
+	ret = 1;
+
+out_unlock:
 	__task_rq_unlock(rq, &rf);
 
 	return ret;
@@ -4047,6 +4104,308 @@ restart:
 	BUG();
 }
 
+#ifdef CONFIG_PROXY_EXEC
+static struct task_struct fake_task;
+
+/*
+ * Follow the blocked-on relation:
+ *
+ *                ,-> task
+ *                |     | blocked-on
+ *                |     v
+ *   blocked-task |   mutex
+ *                |     | owner
+ *                |     v
+ *                `-- task
+ *
+ * and set the blocked-task relation, this latter is used by the mutex code
+ * to find which (blocked) task to hand-off to.
+ *
+ * Lock order:
+ *
+ *   p->pi_lock
+ *     rq->lock
+ *       mutex->wait_lock
+ *         p->blocked_lock
+ *
+ * Returns the task that is going to be used as execution context (the one
+ * that is actually going to be put to run on cpu_of(rq)).
+ *
+ */
+static struct task_struct *
+proxy(struct rq *rq, struct task_struct *next, struct rq_flags *rf)
+{
+	struct task_struct *p = next;
+	struct task_struct *owner;
+	struct mutex *mutex;
+	struct rq *that_rq;
+	int this_cpu, that_cpu;
+	LIST_HEAD(migrate_list);
+
+	this_cpu = cpu_of(rq);
+
+	/*
+	 * Follow blocked_on chain.
+	 *
+	 * TODO: deadlock detection
+	 */
+	for (p = next; p->blocked_on; p = owner) {
+		mutex = p->blocked_on;
+
+		/*
+		 * By taking mutex->wait_lock we hold off concurrent mutex_unlock()
+		 * and ensure @owner sticks around.
+		 */
+		raw_spin_lock(&mutex->wait_lock);
+		owner = __mutex_owner(mutex);
+		/*
+		 * XXX can't this be 0|FLAGS? See __mutex_unlock_slowpath for(;;)
+		 * Mmm, OK, this can't probably happend because we forse
+		 * unlock to skip the for(;;) loop. Is this acceptable though?
+		 */
+retry_owner:
+		if (task_cpu(owner) != this_cpu)
+			goto migrate_task;
+
+		if (owner == p)
+			goto owned_task;
+
+		if (!owner->on_rq)
+			goto blocked_task;
+
+		/*
+		 * OK, now we're absolutely sure @owner is not blocked _and_
+		 * on this rq, therefore holding @rq->lock is sufficient to
+		 * guarantee its existence, as per ttwu_remote().
+		 */
+		raw_spin_unlock(&mutex->wait_lock);
+
+		owner->blocked_task = p;
+	}
+
+	WARN_ON_ONCE(!owner->on_rq);
+
+	return owner;
+
+migrate_task:
+	/*
+	 * The blocked-on relation must not cross CPUs, if this happens
+	 * migrate @p to the @owner's CPU.
+	 *
+	 * This is because we must respect the CPU affinity of execution
+	 * contexts (@owner) but we can ignore affinity for scheduling
+	 * contexts (@p). So we have to move scheduling contexts towards
+	 * potential execution contexts.
+	 *
+	 * XXX [juril] what if @p is not the highest prio task once migrated
+	 * to @owner's CPU?
+	 *
+	 * XXX [juril] also, after @p is migrated it is not migrated back once
+	 * @owner releases the lock? Isn't this a potential problem w.r.t.
+	 * @owner affinity settings?
+	 * [juril] OK. It is migrated back into its affinity mask in
+	 * ttwu_remote(), or by using wake_cpu via select_task_rq, guess we
+	 * might want to add a comment about that here. :-)
+	 *
+	 * TODO: could optimize by finding the CPU of the final owner
+	 * and migrating things there. Given:
+	 *
+	 *	CPU0	CPU1	CPU2
+	 *
+	 *	 a ----> b ----> c
+	 *
+	 * the current scheme would result in migrating 'a' to CPU1,
+	 * then CPU1 would migrate b and a to CPU2. Only then would
+	 * CPU2 run c.
+	 */
+	that_cpu = task_cpu(owner);
+	that_rq = cpu_rq(that_cpu);
+	/*
+	 * @owner can disappear, simply migrate to @that_cpu and leave that CPU
+	 * to sort things out.
+	 */
+	raw_spin_unlock(&mutex->wait_lock);
+
+	/*
+	 * Since we're going to drop @rq, we have to put(@next) first,
+	 * otherwise we have a reference that no longer belongs to us.  Use
+	 * @fake_task to fill the void and make the next pick_next_task()
+	 * invocation happy.
+	 *
+	 * XXX double, triple think about this.
+	 * XXX put doesn't work with ON_RQ_MIGRATE
+	 *
+	 * CPU0				CPU1
+	 *
+	 *				B mutex_lock(X)
+	 *
+	 * A mutex_lock(X) <- B
+	 * A __schedule()
+	 * A pick->A
+	 * A proxy->B
+	 * A migrate A to CPU1
+	 *				B mutex_unlock(X) -> A
+	 *				B __schedule()
+	 *				B pick->A
+	 *				B switch_to (A)
+	 *				A ... does stuff
+	 * A ... is still running here
+	 *
+	 *		* BOOM *
+	 */
+	put_prev_task(rq, next);
+	if (rq->curr != rq->idle) {
+		rq->proxy = rq->idle;
+		set_tsk_need_resched(rq->idle);
+		/*
+		 * XXX [juril] don't we still need to migrate @next to
+		 * @owner's CPU?
+		 */
+		return rq->idle;
+	}
+	rq->proxy = &fake_task;
+
+	for (; p; p = p->blocked_task) {
+		int wake_cpu = p->wake_cpu;
+
+		WARN_ON(p == rq->curr);
+
+		p->on_rq = TASK_ON_RQ_MIGRATING;
+		dequeue_task(rq, p, 0);
+		set_task_cpu(p, that_cpu);
+		/*
+		 * We can abuse blocked_entry to migrate the thing, because @p is
+		 * still on the rq.
+		 */
+		list_add(&p->blocked_entry, &migrate_list);
+
+		/*
+		 * Preserve p->wake_cpu, such that we can tell where it
+		 * used to run later.
+		 */
+		p->wake_cpu = wake_cpu;
+	}
+
+	rq_unpin_lock(rq, rf);
+	raw_spin_unlock(&rq->lock);
+	raw_spin_lock(&that_rq->lock);
+
+	while (!list_empty(&migrate_list)) {
+		p = list_first_entry(&migrate_list, struct task_struct, blocked_entry);
+		list_del_init(&p->blocked_entry);
+
+		enqueue_task(that_rq, p, 0);
+		check_preempt_curr(that_rq, p, 0);
+		p->on_rq = TASK_ON_RQ_QUEUED;
+		resched_curr(that_rq);
+	}
+
+	raw_spin_unlock(&that_rq->lock);
+	raw_spin_lock(&rq->lock);
+	rq_repin_lock(rq, rf);
+
+	return NULL; /* Retry task selection on _this_ CPU. */
+
+owned_task:
+	/*
+	 * Its possible we interleave with mutex_unlock like:
+	 *
+	 *				lock(&rq->lock);
+	 *				  proxy()
+	 * mutex_unlock()
+	 *   lock(&wait_lock);
+	 *   next(owner) = current->blocked_task;
+	 *   unlock(&wait_lock);
+	 *
+	 *   wake_up_q();
+	 *     ...
+	 *       ttwu_remote()
+	 *         __task_rq_lock()
+	 *				  lock(&wait_lock);
+	 *				  owner == p
+	 *
+	 * Which leaves us to finish the ttwu_remote() and make it go.
+	 *
+	 * XXX is this happening in case of an HANDOFF to p?
+	 * In any case, reading of the owner in __mutex_unlock_slowpath is
+	 * done atomically outside wait_lock (only adding waiters to wake_q is
+	 * done inside the critical section).
+	 * Does this means we can get to proxy _w/o an owner_ if that was
+	 * cleared before grabbing wait_lock? Do we account for this case?
+	 * OK we actually do (see PROXY_EXEC ifdeffery in unlock function).
+	 */
+
+	/*
+	 * Finish wakeup, will make the contending ttwu do a
+	 * _spurious_ wakeup, but all code should be able to
+	 * deal with that.
+	 */
+	owner->blocked_on = NULL;
+	owner->state = TASK_RUNNING;
+	// XXX task_woken
+
+	/*
+	 * If @owner/@p is allowed to run on this CPU, make it go.
+	 */
+	if (cpumask_test_cpu(this_cpu, &owner->cpus_allowed)) {
+		raw_spin_unlock(&mutex->wait_lock);
+		return owner;
+	}
+
+	/*
+	 * We have to let ttwu fix things up, because we
+	 * can't restore the affinity. So dequeue.
+	 */
+	owner->on_rq = 0;
+	deactivate_task(rq, p, DEQUEUE_SLEEP);
+	goto blocked_task;
+
+blocked_task:
+	/*
+	 * If !@owner->on_rq, holding @rq->lock will not pin the task,
+	 * so we cannot drop @mutex->wait_lock until we're sure its a blocked
+	 * task on this rq.
+	 *
+	 * We use @owner->blocked_lock to serialize against ttwu_activate().
+	 * Either we see its new owner->on_rq or it will see our list_add().
+	 */
+	raw_spin_lock(&owner->blocked_lock);
+
+	/*
+	 * If we became runnable while waiting for blocked_lock, retry.
+	 */
+	if (owner->on_rq) {
+		/*
+		 * If we see the new on->rq, we must also see the new task_cpu().
+		 */
+		raw_spin_unlock(&owner->blocked_lock);
+		goto retry_owner;
+	}
+
+	/*
+	 * Walk back up the blocked_task relation and enqueue them all on @owner
+	 *
+	 * ttwu_activate() will pick them up and place them on whatever rq
+	 * @owner will run next.
+	 */
+	for (; p; p = p->blocked_task) {
+		p->on_rq = 0;
+		deactivate_task(rq, p, DEQUEUE_SLEEP);
+		list_add(&p->blocked_entry, &owner->blocked_entry);
+	}
+	raw_spin_unlock(&owner->blocked_lock);
+	raw_spin_unlock(&mutex->wait_lock);
+
+	return NULL; /* retry task selection */
+}
+#else /* PROXY_EXEC */
+static struct task_struct *
+proxy(struct rq *rq, struct task_struct *next, struct rq_flags *rf)
+{
+	return next;
+}
+#endif /* PROXY_EXEC */
+
 /*
  * __schedule() is the main scheduler function.
  *
@@ -4126,17 +4485,45 @@ static void __sched notrace __schedule(bool preempt)
 		if (signal_pending_state(prev->state, prev)) {
 			prev->state = TASK_RUNNING;
 		} else {
-			deactivate_task(rq, prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
+			if (!task_is_blocked(prev)) {
+				deactivate_task(rq, prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
 
-			if (prev->in_iowait) {
-				atomic_inc(&rq->nr_iowait);
-				delayacct_blkio_start();
+				if (prev->in_iowait) {
+					atomic_inc(&rq->nr_iowait);
+					delayacct_blkio_start();
+				}
+			} else {
+				/*
+				 * XXX
+				 * Let's make this task, which is blocked on
+				 * a mutex, (push/pull)able (RT/DL).
+				 * Unfortunately we can only deal with that by
+				 * means of a dequeue/enqueue cycle. :-/
+				 */
+				dequeue_task(rq, prev, 0);
+				enqueue_task(rq, prev, 0);
 			}
 		}
 		switch_count = &prev->nvcsw;
 	}
 
-	next = pick_next_task(rq, prev, &rf);
+pick_again:
+	/*
+	 * If picked task is actually blocked it means that it can act as a
+	 * proxy for the task that is holding the mutex picked task is blocked
+	 * on. Get a reference to the blocked (going to be proxy) task here.
+	 * Note that if next isn't actually blocked we will have rq->proxy ==
+	 * rq->curr == next in the end, which is intended and means that proxy
+	 * execution is currently "not in use".
+	 */
+	rq->proxy = next = pick_next_task(rq, rq->proxy, &rf);
+	next->blocked_task = NULL;
+	if (unlikely(task_is_blocked(next))) {
+		next = proxy(rq, next, &rf);
+		if (!next)
+			goto pick_again;
+	}
+
 	clear_tsk_need_resched(prev);
 	clear_preempt_need_resched();
 
@@ -6171,7 +6558,7 @@ void init_idle(struct task_struct *idle, int cpu)
 	__set_task_cpu(idle, cpu);
 	rcu_read_unlock();
 
-	rq->idle = idle;
+	rq->proxy = rq->idle = idle;
 	rcu_assign_pointer(rq->curr, idle);
 	idle->on_rq = TASK_ON_RQ_QUEUED;
 #ifdef CONFIG_SMP
