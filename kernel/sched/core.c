@@ -2310,7 +2310,15 @@ static int ttwu_remote(struct task_struct *p, int wake_flags)
 	 * trigger the on_rq_queued() clause for them.
 	 */
 	if (task_is_blocked(p)) {
-		p->blocked_on = NULL; /* let it run again */
+		raw_spin_lock(&p->blocked_lock);
+
+		if (task_is_blocked(p)) {
+			p->blocked_on = NULL; /* let it run again */
+		} else {
+			raw_spin_unlock(&p->blocked_lock);
+			goto out_wakeup;
+		}
+
 		if (!cpumask_test_cpu(cpu_of(rq), &p->cpus_allowed)) {
 			/*
 			 * proxy stuff moved us outside of the affinity mask
@@ -2320,6 +2328,7 @@ static int ttwu_remote(struct task_struct *p, int wake_flags)
 			p->on_rq = 0;
 			/* XXX [juril] SLEEP|NOCLOCK ? */
 			deactivate_task(rq, p, DEQUEUE_SLEEP);
+			raw_spin_unlock(&p->blocked_lock);
 			goto out_unlock;
 		}
 
@@ -2328,8 +2337,10 @@ static int ttwu_remote(struct task_struct *p, int wake_flags)
 		 * executing context might not be the most elegible anymore.
 		 */
 		resched_curr(rq);
+		raw_spin_unlock(&p->blocked_lock);
 	}
 
+out_wakeup:
 	ttwu_do_wakeup(rq, p, wake_flags, &rf);
 	ret = 1;
 
@@ -4151,12 +4162,26 @@ proxy(struct rq *rq, struct task_struct *next, struct rq_flags *rf)
 	 */
 	for (p = next; p->blocked_on; p = owner) {
 		mutex = p->blocked_on;
+		if (!mutex)
+			return NULL;
 
 		/*
 		 * By taking mutex->wait_lock we hold off concurrent mutex_unlock()
 		 * and ensure @owner sticks around.
 		 */
 		raw_spin_lock(&mutex->wait_lock);
+		raw_spin_lock(&p->blocked_lock);
+
+		/* Check again that p is blocked with blocked_lock held */
+		if (task_is_blocked(p)) {
+			BUG_ON(mutex != p->blocked_on);
+		} else {
+			/* Something changed in the blocked_on chain */
+			raw_spin_unlock(&p->blocked_lock);
+			raw_spin_unlock(&mutex->wait_lock);
+			return NULL;
+		}
+
 		owner = __mutex_owner(mutex);
 		/*
 		 * XXX can't this be 0|FLAGS? See __mutex_unlock_slowpath for(;;)
@@ -4178,6 +4203,7 @@ retry_owner:
 		 * on this rq, therefore holding @rq->lock is sufficient to
 		 * guarantee its existence, as per ttwu_remote().
 		 */
+		raw_spin_unlock(&p->blocked_lock);
 		raw_spin_unlock(&mutex->wait_lock);
 
 		owner->blocked_task = p;
@@ -4224,6 +4250,7 @@ migrate_task:
 	 * @owner can disappear, simply migrate to @that_cpu and leave that CPU
 	 * to sort things out.
 	 */
+	raw_spin_unlock(&p->blocked_lock);
 	raw_spin_unlock(&mutex->wait_lock);
 
 	/*
@@ -4348,6 +4375,7 @@ owned_task:
 	 * If @owner/@p is allowed to run on this CPU, make it go.
 	 */
 	if (cpumask_test_cpu(this_cpu, &owner->cpus_allowed)) {
+		raw_spin_unlock(&p->blocked_lock);
 		raw_spin_unlock(&mutex->wait_lock);
 		return owner;
 	}
@@ -4369,6 +4397,7 @@ blocked_task:
 	 * We use @owner->blocked_lock to serialize against ttwu_activate().
 	 * Either we see its new owner->on_rq or it will see our list_add().
 	 */
+	raw_spin_unlock(&p->blocked_lock);
 	raw_spin_lock(&owner->blocked_lock);
 
 	/*
