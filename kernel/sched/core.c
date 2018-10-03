@@ -1664,6 +1664,14 @@ static inline void ttwu_activate(struct rq *rq, struct task_struct *p, int en_fl
 					 blocked_entry);
 
 		list_del_init(&pp->blocked_entry);
+		/* XXX can't call set_task_cpu() because we are not holding
+		 * neither pp->pi_lock nor task's rq lock. This should however
+		 * be fine as this task can't be woken up as it is blocked on
+		 * this mutex atm.
+		 * A problem however might be that __set_task_cpu() calls
+		 * set_task_rq() which deals with groups and such...
+		 */
+		__set_task_cpu(pp, cpu_of(rq));
 		activate_task(rq, pp, en_flags);
 		pp->on_rq = TASK_ON_RQ_QUEUED;
 		resched_curr(rq);
@@ -3847,7 +3855,8 @@ static void __sched notrace __schedule(bool preempt)
 			 * whether it wants to wake up a task to maintain
 			 * concurrency.
 			 */
-			if (prev->flags & PF_WQ_WORKER) {
+			if ((prev->flags & PF_WQ_WORKER) &&
+			    !task_is_blocked(prev)) {
 				struct task_struct *to_wakeup;
 
 				to_wakeup = wq_worker_sleeping(prev);
