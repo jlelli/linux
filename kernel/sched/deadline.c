@@ -607,6 +607,7 @@ static inline void deadline_queue_pull_task(struct rq *rq)
 static void enqueue_task_dl(struct rq *rq, struct task_struct *p, int flags);
 static void __dequeue_task_dl(struct rq *rq, struct task_struct *p, int flags);
 static void check_preempt_curr_dl(struct rq *rq, struct task_struct *p, int flags);
+static void start_hrtick_dl(struct rq *rq, struct task_struct *p);
 
 /*
  * We are being explicitly informed that a new instance is starting,
@@ -643,7 +644,17 @@ static inline void setup_new_dl_entity(struct sched_dl_entity *dl_se)
 	 */
 	dl_se->deadline = rq_clock(rq) + dl_se->dl_deadline;
 	dl_se->runtime = dl_se->dl_runtime;
+	trace_printk("%s: cpu=%d pid:%d dl_runtime:%llu dl_deadline:%llu dl_period:%llu runtime:%lld deadline:%llu rq_clock:%llu rq_clock_task:%llu",
+			__func__, cpu_of(rq), task_pid_nr(dl_task_of(dl_se)), dl_se->dl_runtime,
+				dl_se->dl_deadline, dl_se->dl_period,
+				dl_se->runtime, dl_se->deadline, rq_clock(rq), rq_clock_task(rq));
+
+	if (hrtick_enabled(rq))
+		start_hrtick_dl(rq, dl_task_of(dl_se));
 }
+
+/* Only try algorithms three times */
+#define DL_MAX_REPLENISH 10
 
 /*
  * Pure Earliest Deadline First (EDF) scheduling does not deal with the
@@ -668,6 +679,12 @@ static void replenish_dl_entity(struct sched_dl_entity *dl_se,
 {
 	struct dl_rq *dl_rq = dl_rq_of_se(dl_se);
 	struct rq *rq = rq_of_dl_rq(dl_rq);
+	unsigned int tries = 0;
+
+	trace_printk("%s: cpu:%d pid:%d dl_runtime:%llu dl_deadline:%llu dl_period:%llu runtime:%lld deadline:%llu rq_clock:%llu rq_clock_task:%llu",
+			__func__, cpu_of(rq), task_pid_nr(dl_task_of(dl_se)), dl_se->dl_runtime,
+				dl_se->dl_deadline, dl_se->dl_period,
+				dl_se->runtime, dl_se->deadline, rq_clock(rq), rq_clock_task(rq));
 
 	BUG_ON(pi_se->dl_runtime <= 0);
 
@@ -692,7 +709,15 @@ static void replenish_dl_entity(struct sched_dl_entity *dl_se,
 	while (dl_se->runtime <= 0) {
 		dl_se->deadline += pi_se->dl_period;
 		dl_se->runtime += pi_se->dl_runtime;
+
+		if (tries++ > DL_MAX_REPLENISH)
+			break;
+
+		trace_printk("%s: pid:%d runtime:%lld deadline:%llu tries:%u",
+			__func__, task_pid_nr(dl_task_of(dl_se)),
+				dl_se->runtime, dl_se->deadline, tries);
 	}
+
 
 	/*
 	 * At this point, the deadline really should be "in
@@ -703,10 +728,13 @@ static void replenish_dl_entity(struct sched_dl_entity *dl_se,
 	 * resetting the deadline and the budget of the
 	 * entity.
 	 */
-	if (dl_time_before(dl_se->deadline, rq_clock(rq))) {
+	if (dl_se->runtime <= 0 || dl_time_before(dl_se->deadline, rq_clock(rq))) {
 		printk_deferred_once("sched: DL replenish lagged too much\n");
 		dl_se->deadline = rq_clock(rq) + pi_se->dl_deadline;
 		dl_se->runtime = pi_se->dl_runtime;
+		trace_printk("%s: lagged pid:%d runtime:%lld deadline:%llu\n",
+				__func__, task_pid_nr(dl_task_of(dl_se)),
+					dl_se->runtime, dl_se->deadline);
 	}
 
 	if (dl_se->dl_yielded)
@@ -895,6 +923,23 @@ static int start_dl_timer(struct task_struct *p)
 
 	lockdep_assert_held(&rq->lock);
 
+	if (dl_se->dl_yielded && dl_se->runtime > 0)
+		dl_se->runtime = 0;
+
+	/*
+	 * We keep moving the deadline away until runtime is in [-dl_runtime,
+	 * 0] range. This ensures correct handling of situations where the
+	 * runtime overrun is arbitrary large.
+	 */
+	while (dl_se->runtime <= -dl_se->dl_runtime) {
+		dl_se->deadline += dl_se->dl_period;
+		dl_se->runtime += dl_se->dl_runtime;
+
+		trace_printk("%s: pid:%d runtime:%lld deadline:%llu",
+			__func__, task_pid_nr(dl_task_of(dl_se)),
+				dl_se->runtime, dl_se->deadline);
+	}
+
 	/*
 	 * We want the timer to fire at the deadline, but considering
 	 * that it is actually coming from rq->clock and not from
@@ -903,6 +948,11 @@ static int start_dl_timer(struct task_struct *p)
 	act = ns_to_ktime(dl_next_period(dl_se));
 	now = hrtimer_cb_get_time(timer);
 	delta = ktime_to_ns(now) - rq_clock(rq);
+	trace_printk("%s: cpu:%d pid:%d dl_runtime:%llu dl_deadline:%llu dl_period:%llu runtime:%lld deadline:%llu rq_clock:%llu rq_clock_task:%llu act:%lld now:%lld delta:%lld",
+			__func__, cpu_of(rq), task_pid_nr(p), dl_se->dl_runtime,
+				dl_se->dl_deadline, dl_se->dl_period,
+				dl_se->runtime, dl_se->deadline,
+				rq_clock(rq), rq_clock_task(rq), act, now, delta);
 	act = ktime_add_ns(act, delta);
 
 	/*
@@ -910,8 +960,7 @@ static int start_dl_timer(struct task_struct *p)
 	 * chosen as the deadline is too small, don't even try to
 	 * start the timer in the past!
 	 */
-	if (ktime_us_delta(act, now) < 0)
-		return 0;
+	BUG_ON(ktime_us_delta(act, now) < 0);
 
 	/*
 	 * !enqueued will guarantee another callback; even if one is already in
@@ -924,6 +973,10 @@ static int start_dl_timer(struct task_struct *p)
 	 */
 	if (!hrtimer_is_queued(timer)) {
 		get_task_struct(p);
+		trace_printk("%s: TIMER SET pid:%d dl_runtime:%llu dl_deadline:%llu dl_period:%llu runtime:%lld deadline:%llu act:%lld",
+				__func__, task_pid_nr(p), dl_se->dl_runtime,
+					dl_se->dl_deadline, dl_se->dl_period,
+					dl_se->runtime, dl_se->deadline, act);
 		hrtimer_start(timer, act, HRTIMER_MODE_ABS);
 	}
 
@@ -1204,6 +1257,11 @@ static void update_curr_dl(struct rq *rq)
 
 	dl_se->runtime -= scaled_delta_exec;
 
+	trace_printk("%s: cpu:%d pid:%d dl_runtime:%llu dl_deadline:%llu dl_period:%llu runtime:%lld deadline:%llu rq_clock:%llu rq_clock_task:%llu delta_exec:%llu",
+			__func__, cpu, task_pid_nr(curr), dl_se->dl_runtime,
+				dl_se->dl_deadline, dl_se->dl_period,
+				dl_se->runtime, dl_se->deadline, rq_clock(rq),
+				rq_clock_task(rq), delta_exec);
 throttle:
 	if (dl_runtime_exceeded(dl_se) || dl_se->dl_yielded) {
 		dl_se->dl_throttled = 1;
@@ -1214,8 +1272,12 @@ throttle:
 			dl_se->dl_overrun = 1;
 
 		__dequeue_task_dl(rq, curr, 0);
-		if (unlikely(dl_se->dl_boosted || !start_dl_timer(curr)))
+
+		if (unlikely(dl_se->dl_boosted)) {
 			enqueue_task_dl(rq, curr, ENQUEUE_REPLENISH);
+		} else {
+			start_dl_timer(curr);
+		}
 
 		if (!is_leftmost(curr, &rq->dl))
 			resched_curr(rq);
@@ -2610,6 +2672,10 @@ void __getparam_dl(struct task_struct *p, struct sched_attr *attr)
  */
 bool __checkparam_dl(const struct sched_attr *attr)
 {
+	printk("%s: runtime:%llu deadline:%llu period:%llu\n",
+			__func__, attr->sched_runtime, attr->sched_deadline,
+			attr->sched_period);
+
 	/* special dl tasks don't actually use any parameter */
 	if (attr->sched_flags & SCHED_FLAG_SUGOV)
 		return true;
@@ -2636,8 +2702,10 @@ bool __checkparam_dl(const struct sched_attr *attr)
 	/* runtime <= deadline <= period (if period != 0) */
 	if ((attr->sched_period != 0 &&
 	     attr->sched_period < attr->sched_deadline) ||
-	    attr->sched_deadline < attr->sched_runtime)
+	    attr->sched_deadline < attr->sched_runtime) {
+		printk("%s: fail to accept\n", __func__);
 		return false;
+	}
 
 	return true;
 }

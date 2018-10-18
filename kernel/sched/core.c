@@ -158,6 +158,10 @@ static void update_rq_clock_task(struct rq *rq, s64 delta)
 	if (irq_delta > delta)
 		irq_delta = delta;
 
+	trace_printk("%s: cpu=%d rq_clock_task=%llu irq_time_read=%llu prev_irq_time=%llu delta=%lld irq_delta=%lld",
+			__func__, cpu_of(rq), rq->clock_task,
+			irq_time_read(cpu_of(rq)), rq->prev_irq_time, delta,
+			irq_delta);
 	rq->prev_irq_time += irq_delta;
 	delta -= irq_delta;
 #endif
@@ -198,6 +202,9 @@ void update_rq_clock(struct rq *rq)
 #endif
 
 	delta = sched_clock_cpu(cpu_of(rq)) - rq->clock;
+	trace_printk("%s: cpu=%d rq_clock=%llu sched_clock_cpu=%llu delta=%lld",
+			__func__, cpu_of(rq), rq->clock,
+			sched_clock_cpu(cpu_of(rq)), delta);
 	if (delta < 0)
 		return;
 	rq->clock += delta;
@@ -229,6 +236,8 @@ static enum hrtimer_restart hrtick(struct hrtimer *timer)
 
 	rq_lock(rq, &rf);
 	update_rq_clock(rq);
+	trace_printk("%s: pid:%d clock:%llu",
+			__func__, task_pid_nr(rq->curr), rq_clock(rq));
 	rq->curr->sched_class->task_tick(rq, rq->curr, 1);
 	rq_unlock(rq, &rf);
 
@@ -275,6 +284,9 @@ void hrtick_start(struct rq *rq, u64 delay)
 	 */
 	delta = max_t(s64, delay, 10000LL);
 	time = ktime_add_ns(timer->base->get_time(), delta);
+
+	trace_printk("%s: delay:%llu delta:%lld time:%lld",
+			__func__, delay, delta, time);
 
 	hrtimer_set_expires(timer, time);
 
