@@ -649,6 +649,9 @@ static inline void setup_new_dl_entity(struct sched_dl_entity *dl_se)
 		start_hrtick_dl(rq, dl_task_of(dl_se));
 }
 
+/* Only try to catch up DL_MAX_REPLENISH times */
+#define DL_MAX_REPLENISH 10
+
 /*
  * Pure Earliest Deadline First (EDF) scheduling does not deal with the
  * possibility of a entity lasting more than what it declared, and thus
@@ -672,6 +675,7 @@ static void replenish_dl_entity(struct sched_dl_entity *dl_se,
 {
 	struct dl_rq *dl_rq = dl_rq_of_se(dl_se);
 	struct rq *rq = rq_of_dl_rq(dl_rq);
+	unsigned int tries = 0;
 
 	BUG_ON(pi_se->dl_runtime <= 0);
 
@@ -696,6 +700,13 @@ static void replenish_dl_entity(struct sched_dl_entity *dl_se,
 	while (dl_se->runtime <= 0) {
 		dl_se->deadline += pi_se->dl_period;
 		dl_se->runtime += pi_se->dl_runtime;
+
+		/*
+		 * Too many iterations and we didn't catch up yet. Bail out
+		 * and use rq->clock reference to fix things (see below).
+		 */
+		if (++tries > DL_MAX_REPLENISH)
+			break;
 	}
 
 	/*
@@ -707,7 +718,7 @@ static void replenish_dl_entity(struct sched_dl_entity *dl_se,
 	 * resetting the deadline and the budget of the
 	 * entity.
 	 */
-	if (dl_time_before(dl_se->deadline, rq_clock(rq))) {
+	if (dl_se->runtime <= 0 || dl_time_before(dl_se->deadline, rq_clock(rq))) {
 		printk_deferred_once("sched: DL replenish lagged too much\n");
 		dl_se->deadline = rq_clock(rq) + pi_se->dl_deadline;
 		dl_se->runtime = pi_se->dl_runtime;
