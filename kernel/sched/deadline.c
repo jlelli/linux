@@ -607,6 +607,7 @@ static inline void deadline_queue_pull_task(struct rq *rq)
 static void enqueue_task_dl(struct rq *rq, struct task_struct *p, int flags);
 static void __dequeue_task_dl(struct rq *rq, struct task_struct *p, int flags);
 static void check_preempt_curr_dl(struct rq *rq, struct task_struct *p, int flags);
+static void start_hrtick_dl(struct rq *rq, struct task_struct *p);
 
 /*
  * We are being explicitly informed that a new instance is starting,
@@ -643,6 +644,9 @@ static inline void setup_new_dl_entity(struct sched_dl_entity *dl_se)
 	 */
 	dl_se->deadline = rq_clock(rq) + dl_se->dl_deadline;
 	dl_se->runtime = dl_se->dl_runtime;
+
+	if (hrtick_enabled(rq))
+		start_hrtick_dl(rq, dl_task_of(dl_se));
 }
 
 /*
