@@ -672,6 +672,9 @@ struct dl_rq {
 	 * by the GRUB algorithm.
 	 */
 	u64			bw_ratio;
+
+	u64			clock_skew;
+	u64			delta_old;
 };
 
 #ifdef CONFIG_FAIR_GROUP_SCHED

@@ -372,6 +372,9 @@ void init_dl_rq(struct dl_rq *dl_rq)
 	dl_rq->running_bw = 0;
 	dl_rq->this_bw = 0;
 	init_dl_rq_bw_ratio(dl_rq);
+
+	dl_rq->clock_skew = 0;
+	dl_rq->delta_old = 0;
 }
 
 #ifdef CONFIG_SMP
@@ -644,10 +647,11 @@ static inline void setup_new_dl_entity(struct sched_dl_entity *dl_se)
 	 */
 	dl_se->deadline = rq_clock(rq) + dl_se->dl_deadline;
 	dl_se->runtime = dl_se->dl_runtime;
-	trace_printk("%s: cpu=%d pid:%d dl_runtime:%llu dl_deadline:%llu dl_period:%llu runtime:%lld deadline:%llu rq_clock:%llu rq_clock_task:%llu",
+	dl_rq->delta_old = rq_clock(rq) - rq_clock_task(rq);
+	trace_printk("%s: cpu=%d pid:%d dl_runtime:%llu dl_deadline:%llu dl_period:%llu runtime:%lld deadline:%llu rq_clock:%llu rq_clock_task:%llu skew:%llu",
 			__func__, cpu_of(rq), task_pid_nr(dl_task_of(dl_se)), dl_se->dl_runtime,
 				dl_se->dl_deadline, dl_se->dl_period,
-				dl_se->runtime, dl_se->deadline, rq_clock(rq), rq_clock_task(rq));
+				dl_se->runtime, dl_se->deadline, rq_clock(rq), rq_clock_task(rq), dl_rq->clock_skew);
 
 	if (hrtick_enabled(rq))
 		start_hrtick_dl(rq, dl_task_of(dl_se));
@@ -706,6 +710,7 @@ static void replenish_dl_entity(struct sched_dl_entity *dl_se,
 	 * handling of situations where the runtime overrun is
 	 * arbitrary large.
 	 */
+	dl_se->deadline += dl_rq->clock_skew;
 	while (dl_se->runtime <= 0) {
 		dl_se->deadline += pi_se->dl_period;
 		dl_se->runtime += pi_se->dl_runtime;
@@ -931,6 +936,7 @@ static int start_dl_timer(struct task_struct *p)
 	 * 0] range. This ensures correct handling of situations where the
 	 * runtime overrun is arbitrary large.
 	 */
+	dl_se->deadline += rq->dl.clock_skew;
 	while (dl_se->runtime <= -dl_se->dl_runtime) {
 		dl_se->deadline += dl_se->dl_period;
 		dl_se->runtime += dl_se->dl_runtime;
@@ -1004,6 +1010,7 @@ static enum hrtimer_restart dl_task_timer(struct hrtimer *timer)
 	struct task_struct *p = dl_task_of(dl_se);
 	struct rq_flags rf;
 	struct rq *rq;
+	u64 clock_delta;
 
 	rq = task_rq_lock(p, &rf);
 
@@ -1030,6 +1037,10 @@ static enum hrtimer_restart dl_task_timer(struct hrtimer *timer)
 
 	sched_clock_tick();
 	update_rq_clock(rq);
+
+	clock_delta = rq_clock(rq) - rq_clock_task(rq);
+	rq->dl.clock_skew = clock_delta - rq->dl.delta_old;
+	rq->dl.delta_old = clock_delta;
 
 	/*
 	 * If the throttle happened during sched-out; like:
@@ -1201,9 +1212,10 @@ static void update_curr_dl(struct rq *rq)
 {
 	struct task_struct *curr = rq->curr;
 	struct sched_dl_entity *dl_se = &curr->dl;
+	struct dl_rq *dl_rq = &rq->dl;
 	u64 delta_exec, scaled_delta_exec;
 	int cpu = cpu_of(rq);
-	u64 now;
+	u64 now, clock_delta;
 
 	if (!dl_task(curr) || !on_dl_rq(dl_se))
 		return;
@@ -1218,6 +1230,11 @@ static void update_curr_dl(struct rq *rq)
 	 */
 	now = rq_clock_task(rq);
 	delta_exec = now - curr->se.exec_start;
+
+	clock_delta = rq_clock(rq) - now;
+	dl_rq->clock_skew = clock_delta - dl_rq->delta_old;
+	dl_rq->delta_old = clock_delta;
+
 	if (unlikely((s64)delta_exec <= 0)) {
 		if (unlikely(dl_se->dl_yielded))
 			goto throttle;
@@ -1257,11 +1274,12 @@ static void update_curr_dl(struct rq *rq)
 
 	dl_se->runtime -= scaled_delta_exec;
 
-	trace_printk("%s: cpu:%d pid:%d dl_runtime:%llu dl_deadline:%llu dl_period:%llu runtime:%lld deadline:%llu rq_clock:%llu rq_clock_task:%llu delta_exec:%llu",
+	trace_printk("%s: cpu:%d pid:%d dl_runtime:%llu dl_deadline:%llu dl_period:%llu runtime:%lld deadline:%llu rq_clock:%llu rq_clock_task:%llu delta_exec:%llu skew:%llu",
 			__func__, cpu, task_pid_nr(curr), dl_se->dl_runtime,
 				dl_se->dl_deadline, dl_se->dl_period,
 				dl_se->runtime, dl_se->deadline, rq_clock(rq),
-				rq_clock_task(rq), delta_exec);
+				rq_clock_task(rq), delta_exec,
+				dl_rq->clock_skew);
 throttle:
 	if (dl_runtime_exceeded(dl_se) || dl_se->dl_yielded) {
 		dl_se->dl_throttled = 1;
