@@ -2049,7 +2049,7 @@ static __latent_entropy struct task_struct *copy_process(
 	lockdep_init_task(p);
 #endif
 
-	p->blocked_task = NULL; /* nobody is boosting us yet*/
+	p->proxied_by = NULL; /* nobody is boosting us yet*/
 	p->blocked_on = NULL;  /* not blocked yet */
 	INIT_LIST_HEAD(&p->blocked_entry);
 

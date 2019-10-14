@@ -4213,7 +4213,7 @@ retry_owner:
 		raw_spin_unlock(&p->blocked_lock);
 		raw_spin_unlock(&mutex->wait_lock);
 
-		owner->blocked_task = p;
+		owner->proxied_by = p;
 	}
 
 	WARN_ON_ONCE(!owner->on_rq);
@@ -4299,7 +4299,7 @@ migrate_task:
 	}
 	rq->proxy = &fake_task;
 
-	for (; p; p = p->blocked_task) {
+	for (; p; p = p->proxied_by) {
 		int wake_cpu = p->wake_cpu;
 
 		WARN_ON(p == rq->curr);
@@ -4348,7 +4348,7 @@ owned_task:
 	 *				  proxy()
 	 * mutex_unlock()
 	 *   lock(&wait_lock);
-	 *   next(owner) = current->blocked_task;
+	 *   next(owner) = current->proxied_by;
 	 *   unlock(&wait_lock);
 	 *
 	 *   wake_up_q();
@@ -4424,7 +4424,10 @@ blocked_task:
 	 * ttwu_activate() will pick them up and place them on whatever rq
 	 * @owner will run next.
 	 */
-	for (; p; p = p->blocked_task) {
+	for (; p; p = p->proxied_by) {
+		if (p == owner)
+			continue;
+		BUG_ON(!p->on_rq);
 		p->on_rq = 0;
 		deactivate_task(rq, p, DEQUEUE_SLEEP);
 		list_add(&p->blocked_entry, &owner->blocked_entry);
@@ -4553,7 +4556,7 @@ pick_again:
 	 * execution is currently "not in use".
 	 */
 	rq->proxy = next = pick_next_task(rq, rq->proxy, &rf);
-	next->blocked_task = NULL;
+	next->proxied_by = NULL;
 	if (unlikely(task_is_blocked(next))) {
 		next = proxy(rq, next, &rf);
 		if (!next)
