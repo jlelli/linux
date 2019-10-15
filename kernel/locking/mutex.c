@@ -1311,14 +1311,20 @@ static noinline void __sched __mutex_unlock_slowpath(struct mutex *lock, unsigne
 	raw_spin_lock(&current->blocked_lock);
 	/*
 	 * If we have a task boosting us, and that task was boosting us through
-	 * this lock, hand the lock that that task, as that is the highest
+	 * this lock, hand the lock to that task, as that is the highest
 	 * waiter, as selected by the scheduling function.
 	 *
 	 * XXX existance guarantee on ->blocked_task ?
 	 */
-	next = current->blocked_task;
-	if (next && next->blocked_on != lock)
-		next = NULL;
+	next = current->proxied_by;
+	if (next) {
+		if (next->blocked_on != lock) {
+			next = NULL;
+		} else {
+			wake_q_add(&wake_q, next);
+			current->proxied_by = NULL;
+		}
+	}
 
 	/*
 	 * XXX if there was no higher prio proxy, ->blocked_task will not have
