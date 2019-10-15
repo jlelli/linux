@@ -2326,7 +2326,7 @@ static int ttwu_remote(struct task_struct *p, int wake_flags)
 			goto out_wakeup;
 		}
 
-		if (!cpumask_test_cpu(cpu_of(rq), &p->cpus_allowed)) {
+		if (!cpumask_test_cpu(cpu_of(rq), p->cpus_ptr)) {
 			/*
 			 * proxy stuff moved us outside of the affinity mask
 			 * 'sleep' now and fail the direct wakeup so that the
@@ -2335,6 +2335,7 @@ static int ttwu_remote(struct task_struct *p, int wake_flags)
 			p->on_rq = 0;
 			/* XXX [juril] SLEEP|NOCLOCK ? */
 			deactivate_task(rq, p, DEQUEUE_SLEEP);
+			resched_curr(rq);
 			raw_spin_unlock(&p->blocked_lock);
 			goto out_unlock;
 		}
@@ -4123,9 +4124,9 @@ restart:
 }
 
 #ifdef CONFIG_PROXY_EXEC
-static struct task_struct fake_task;
-
 /*
+ * Find who @next (currently blocked on a mutex) can proxy for.
+ *
  * Follow the blocked-on relation:
  *
  *                ,-> task
@@ -4154,7 +4155,8 @@ static struct task_struct *
 proxy(struct rq *rq, struct task_struct *next, struct rq_flags *rf)
 {
 	struct task_struct *p = next;
-	struct task_struct *owner;
+	struct task_struct *owner = NULL;
+	struct task_struct *prev = rq->curr;
 	struct mutex *mutex;
 	struct rq *that_rq;
 	int this_cpu, that_cpu;
@@ -4169,6 +4171,7 @@ proxy(struct rq *rq, struct task_struct *next, struct rq_flags *rf)
 	 */
 	for (p = next; p->blocked_on; p = owner) {
 		mutex = p->blocked_on;
+		/* Something changed in the chain, pick_again */
 		if (!mutex)
 			return NULL;
 
@@ -4180,10 +4183,13 @@ proxy(struct rq *rq, struct task_struct *next, struct rq_flags *rf)
 		raw_spin_lock(&p->blocked_lock);
 
 		/* Check again that p is blocked with blocked_lock held */
-		if (task_is_blocked(p)) {
-			BUG_ON(mutex != p->blocked_on);
-		} else {
-			/* Something changed in the blocked_on chain */
+		if (!task_is_blocked(p) || mutex != p->blocked_on) {
+			/*
+			 * Something changed in the blocked_on chain and
+			 * we don't know if only at this level. So, let's
+			 * just bail out completely and let __schedule
+			 * figure things out (pick_again loop).
+			 */
 			raw_spin_unlock(&p->blocked_lock);
 			raw_spin_unlock(&mutex->wait_lock);
 			return NULL;
@@ -4287,7 +4293,10 @@ migrate_task:
 	 *
 	 *		* BOOM *
 	 */
+	prev = rq->curr;
+	rq->curr = next;
 	put_prev_task(rq, next);
+	rq->curr = prev;
 	if (rq->curr != rq->idle) {
 		rq->proxy = rq->idle;
 		set_tsk_need_resched(rq->idle);
@@ -4297,7 +4306,7 @@ migrate_task:
 		 */
 		return rq->idle;
 	}
-	rq->proxy = &fake_task;
+	rq->proxy = rq->curr;
 
 	for (; p; p = p->proxied_by) {
 		int wake_cpu = p->wake_cpu;
@@ -4331,7 +4340,11 @@ migrate_task:
 		enqueue_task(that_rq, p, 0);
 		check_preempt_curr(that_rq, p, 0);
 		p->on_rq = TASK_ON_RQ_QUEUED;
-		resched_curr(that_rq);
+		/*
+		 * check_preempt_curr has already called
+		 * resched_curr(that_rq) in case it is
+		 * needed.
+		 */
 	}
 
 	raw_spin_unlock(&that_rq->lock);
@@ -4381,7 +4394,7 @@ owned_task:
 	/*
 	 * If @owner/@p is allowed to run on this CPU, make it go.
 	 */
-	if (cpumask_test_cpu(this_cpu, &owner->cpus_allowed)) {
+	if (cpumask_test_cpu(this_cpu, owner->cpus_ptr)) {
 		raw_spin_unlock(&p->blocked_lock);
 		raw_spin_unlock(&mutex->wait_lock);
 		return owner;
@@ -4389,11 +4402,11 @@ owned_task:
 
 	/*
 	 * We have to let ttwu fix things up, because we
-	 * can't restore the affinity. So dequeue.
+	 * can't restore the affinity. So dequeue, and continue
+	 * to the blocked_task case.
 	 */
 	owner->on_rq = 0;
 	deactivate_task(rq, p, DEQUEUE_SLEEP);
-	goto blocked_task;
 
 blocked_task:
 	/*
@@ -4404,8 +4417,10 @@ blocked_task:
 	 * We use @owner->blocked_lock to serialize against ttwu_activate().
 	 * Either we see its new owner->on_rq or it will see our list_add().
 	 */
-	raw_spin_unlock(&p->blocked_lock);
-	raw_spin_lock(&owner->blocked_lock);
+	if (owner != p) {
+		raw_spin_unlock(&p->blocked_lock);
+		raw_spin_lock(&owner->blocked_lock);
+	}
 
 	/*
 	 * If we became runnable while waiting for blocked_lock, retry.
@@ -4415,11 +4430,12 @@ blocked_task:
 		 * If we see the new on->rq, we must also see the new task_cpu().
 		 */
 		raw_spin_unlock(&owner->blocked_lock);
+		raw_spin_lock(&p->blocked_lock);
 		goto retry_owner;
 	}
 
 	/*
-	 * Walk back up the blocked_task relation and enqueue them all on @owner
+	 * Walk back up the proxied_by relation and enqueue them all on @owner
 	 *
 	 * ttwu_activate() will pick them up and place them on whatever rq
 	 * @owner will run next.
@@ -4632,8 +4648,7 @@ static inline void sched_submit_work(struct task_struct *tsk)
 	 * in the possible wakeup of a kworker and because wq_worker_sleeping()
 	 * requires it.
 	 */
-	if ((tsk->flags & (PF_WQ_WORKER | PF_IO_WORKER)) &&
-	    !task_is_blocked(tsk)) {
+	if (tsk->flags & (PF_WQ_WORKER | PF_IO_WORKER)) {
 		preempt_disable();
 		if (tsk->flags & PF_WQ_WORKER)
 			wq_worker_sleeping(tsk);
@@ -4642,7 +4657,7 @@ static inline void sched_submit_work(struct task_struct *tsk)
 		preempt_enable_no_resched();
 	}
 
-	if (tsk_is_pi_blocked(tsk))
+	if (tsk_is_pi_blocked(tsk) || task_is_blocked(tsk))
 		return;
 
 	/*

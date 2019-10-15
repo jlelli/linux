@@ -1828,7 +1828,11 @@ struct sched_class {
 
 static inline void put_prev_task(struct rq *rq, struct task_struct *prev)
 {
-	WARN_ON_ONCE(rq->curr != prev);
+	WARN_ON_ONCE(rq->curr != prev && prev != rq->proxy);
+
+	if (prev == rq->proxy && task_cpu(prev) != cpu_of(rq))
+		return;
+
 	prev->sched_class->put_prev_task(rq, prev);
 }
 
