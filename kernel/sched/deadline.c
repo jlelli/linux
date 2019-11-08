@@ -1482,7 +1482,7 @@ static void enqueue_task_dl(struct rq *rq, struct task_struct *p, int flags)
 	 *   boosted due to a SCHED_DEADLINE pi-waiter).
 	 * Otherwise we keep our runtime and deadline.
 	 */
-	if (pi_task && dl_prio(pi_task->normal_prio) && p->dl.dl_boosted) {
+	if (pi_task && dl_prio(pi_task->prio) && p->dl.dl_boosted) {
 		pi_se = &pi_task->dl;
 	} else if (!dl_prio(p->normal_prio)) {
 		/*
