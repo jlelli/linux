@@ -2679,6 +2679,22 @@ bool __checkparam_dl(const struct sched_attr *attr)
 /*
  * This function clears the sched_dl_entity static params.
  */
+void __dl_copy_static(struct task_struct *to, struct task_struct *from)
+{
+	struct sched_dl_entity *to_se = &to->dl;
+	struct sched_dl_entity *from_se = &from->dl;
+
+	to_se->dl_runtime	= from_se->dl_runtime;
+	to_se->dl_deadline	= from_se->dl_deadline;
+	to_se->dl_period	= from_se->dl_period;
+	to_se->flags		= from_se->flags;
+	to_se->dl_bw		= from_se->dl_bw;
+	to_se->dl_density	= from_se->dl_density;
+}
+
+/*
+ * This function clears the sched_dl_entity static params.
+ */
 void __dl_clear_params(struct task_struct *p)
 {
 	struct sched_dl_entity *dl_se = &p->dl;
@@ -2690,6 +2706,7 @@ void __dl_clear_params(struct task_struct *p)
 	dl_se->dl_bw			= 0;
 	dl_se->dl_density		= 0;
 
+	dl_se->dl_boosted		= 0;
 	dl_se->dl_throttled		= 0;
 	dl_se->dl_yielded		= 0;
 	dl_se->dl_non_contending	= 0;

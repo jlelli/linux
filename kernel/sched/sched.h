@@ -239,6 +239,7 @@ struct rt_bandwidth {
 	unsigned int		rt_period_active;
 };
 
+void __dl_copy_static(struct task_struct *to, struct task_struct *from);
 void __dl_clear_params(struct task_struct *p);
 
 /*
