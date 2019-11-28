@@ -7241,6 +7241,7 @@ static void detach_task(struct task_struct *p, struct lb_env *env)
 	lockdep_assert_held(&env->src_rq->lock);
 
 	deactivate_task(env->src_rq, p, DEQUEUE_NOCLOCK);
+	trace_printk("pid=%d old=%d new=%d", task_pid_nr(p), task_cpu(p), env->dst_cpu);
 	set_task_cpu(p, env->dst_cpu);
 }
 
@@ -7332,6 +7333,7 @@ static int detach_tasks(struct lb_env *env)
 				goto next;
 
 			env->imbalance -= load;
+			trace_printk("pid=%d migrate_load", task_pid_nr(p));
 			break;
 
 		case migrate_util:
@@ -7341,10 +7343,12 @@ static int detach_tasks(struct lb_env *env)
 				goto next;
 
 			env->imbalance -= util;
+			trace_printk("pid=%d migrate_util", task_pid_nr(p));
 			break;
 
 		case migrate_task:
 			env->imbalance--;
+			trace_printk("pid=%d migrate_task", task_pid_nr(p));
 			break;
 
 		case migrate_misfit:
@@ -7353,6 +7357,7 @@ static int detach_tasks(struct lb_env *env)
 				goto next;
 
 			env->imbalance = 0;
+			trace_printk("pid=%d migrate_misfit", task_pid_nr(p));
 			break;
 		}
 
@@ -9477,6 +9482,7 @@ static int active_load_balance_cpu_stop(void *data)
 
 		p = detach_one_task(&env);
 		if (p) {
+			trace_printk("pid=%d active_balance", task_pid_nr(p));
 			schedstat_inc(sd->alb_pushed);
 			/* Active balancing done, reset the failure counter. */
 			sd->nr_balance_failed = 0;

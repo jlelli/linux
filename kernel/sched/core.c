@@ -1492,6 +1492,7 @@ static struct rq *move_queued_task(struct rq *rq, struct rq_flags *rf,
 
 	WRITE_ONCE(p->on_rq, TASK_ON_RQ_MIGRATING);
 	dequeue_task(rq, p, DEQUEUE_NOCLOCK);
+	trace_printk("pid=%d old=%d new=%d", task_pid_nr(p), task_cpu(p), new_cpu);
 	set_task_cpu(p, new_cpu);
 	rq_unlock(rq, rf);
 
@@ -1769,6 +1770,7 @@ static void __migrate_swap_task(struct task_struct *p, int cpu)
 		rq_pin_lock(dst_rq, &drf);
 
 		deactivate_task(src_rq, p, 0);
+		trace_printk("pid=%d old=%d new=%d", task_pid_nr(p), task_cpu(p), cpu);
 		set_task_cpu(p, cpu);
 		activate_task(dst_rq, p, 0);
 		check_preempt_curr(dst_rq, p, 0);
@@ -2628,6 +2630,7 @@ try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags)
 	if (task_cpu(p) != cpu) {
 		wake_flags |= WF_MIGRATED;
 		psi_ttwu_dequeue(p);
+		trace_printk("pid=%d old=%d new=%d", task_pid_nr(p), task_cpu(p), cpu);
 		set_task_cpu(p, cpu);
 	}
 
