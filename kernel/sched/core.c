@@ -4189,7 +4189,7 @@ proxy(struct rq *rq, struct task_struct *next, struct rq_flags *rf)
 			return NULL;
 		}
 
-		owner = __mutex_owner(mutex);
+		owner = mutex_owner(mutex);
 		/*
 		 * XXX can't this be 0|FLAGS? See __mutex_unlock_slowpath for(;;)
 		 * Mmm, OK, this can't probably happend because we forse
