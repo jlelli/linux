@@ -79,6 +79,12 @@ static inline struct task_struct *__mutex_owner(struct mutex *lock)
 	return (struct task_struct *)(atomic_long_read(&lock->owner) & ~MUTEX_FLAGS);
 }
 
+struct task_struct *mutex_owner(struct mutex *lock)
+{
+	return __mutex_owner(lock);
+}
+EXPORT_SYMBOL(mutex_owner);
+
 static inline struct task_struct *__owner_task(unsigned long owner)
 {
 	return (struct task_struct *)(owner & ~MUTEX_FLAGS);
