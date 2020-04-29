@@ -980,6 +980,7 @@ __mutex_lock_common(struct mutex *lock, long state, unsigned int subclass,
 	    mutex_optimistic_spin(lock, ww_ctx, use_ww_ctx, NULL)) {
 		/* got the lock, yay! */
 		lock_acquired(&lock->dep_map, ip);
+		trace_printk("%d locks %s (trylock)", task_pid_nr(current), lock->dep_map.name);
 		if (use_ww_ctx && ww_ctx)
 			ww_mutex_set_context_fastpath(ww, ww_ctx);
 		preempt_enable();
@@ -1054,6 +1055,7 @@ __mutex_lock_common(struct mutex *lock, long state, unsigned int subclass,
 
 		raw_spin_unlock(&current->blocked_lock);
 		raw_spin_unlock_irqrestore(&lock->wait_lock, flags);
+		trace_printk("%d blocks on %s", task_pid_nr(current), lock->dep_map.name);
 		schedule_preempt_disabled();
 
 		/*
@@ -1106,6 +1108,7 @@ acquired:
 skip_wait:
 	/* got the lock - cleanup and rejoice! */
 	lock_acquired(&lock->dep_map, ip);
+	trace_printk("%d locks %s", task_pid_nr(current), lock->dep_map.name);
 
 	if (use_ww_ctx && ww_ctx)
 		ww_mutex_lock_acquired(ww, ww_ctx);

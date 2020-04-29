@@ -4101,6 +4101,9 @@ proxy(struct rq *rq, struct task_struct *next, struct rq_flags *rf)
 
 	this_cpu = cpu_of(rq);
 
+	trace_printk("proxy:start next=%d rq=%d",
+			task_pid_nr(next), cpu_of(rq));
+
 	/*
 	 * Follow blocked_on chain.
 	 *
@@ -4109,8 +4112,11 @@ proxy(struct rq *rq, struct task_struct *next, struct rq_flags *rf)
 	for (p = next; p->blocked_on; p = owner) {
 		mutex = p->blocked_on;
 		/* Something changed in the chain, pick_again */
-		if (!mutex)
+		if (!mutex) {
+			trace_printk("proxy:pick_again p=%d rq=%d",
+					task_pid_nr(p), cpu_of(rq));
 			return NULL;
+		}
 
 		/*
 		 * By taking mutex->wait_lock we hold off concurrent mutex_unlock()
@@ -4129,10 +4135,15 @@ proxy(struct rq *rq, struct task_struct *next, struct rq_flags *rf)
 			 */
 			raw_spin_unlock(&p->blocked_lock);
 			raw_spin_unlock(&mutex->wait_lock);
+			trace_printk("proxy:smt_change p=%d rq=%d",
+					task_pid_nr(p), cpu_of(rq));
 			return NULL;
 		}
 
 		owner = mutex_owner(mutex);
+		trace_printk("proxy:owner p=%d rq=%d mutex=%s owner=%d",
+				task_pid_nr(p), cpu_of(rq),
+				mutex->dep_map.name, task_pid_nr(owner));
 		/*
 		 * XXX can't this be 0|FLAGS? See __mutex_unlock_slowpath for(;;)
 		 * Mmm, OK, this can't probably happend because we forse
@@ -4157,6 +4168,9 @@ retry_owner:
 		raw_spin_unlock(&mutex->wait_lock);
 
 		owner->proxied_by = p;
+		trace_printk("proxy:owner_proxied p=%d rq=%d mutex=%s owner=%d",
+				task_pid_nr(p), cpu_of(rq),
+				mutex->dep_map.name, task_pid_nr(owner));
 	}
 
 	WARN_ON_ONCE(!owner->on_rq);
