@@ -235,6 +235,11 @@ static void __mutex_handoff(struct mutex *lock, struct task_struct *task)
 {
 	unsigned long owner = atomic_long_read(&lock->owner);
 
+	if (task)
+		trace_printk("%s: handoff to next=%d for lock=%s",
+				__func__, task_pid_nr(task),
+				lock->dep_map.name);
+
 	for (;;) {
 		unsigned long old, new;
 
@@ -751,6 +756,7 @@ static noinline void __sched __mutex_unlock_slowpath(struct mutex *lock, unsigne
  */
 void __sched mutex_unlock(struct mutex *lock)
 {
+	trace_printk("%d unlocks %s", task_pid_nr(current), lock->dep_map.name);
 #ifndef CONFIG_DEBUG_LOCK_ALLOC
 	if (__mutex_unlock_fast(lock))
 		return;
@@ -980,6 +986,7 @@ __mutex_lock_common(struct mutex *lock, long state, unsigned int subclass,
 	    mutex_optimistic_spin(lock, ww_ctx, use_ww_ctx, NULL)) {
 		/* got the lock, yay! */
 		lock_acquired(&lock->dep_map, ip);
+		trace_printk("%d locks %s (trylock)", task_pid_nr(current), lock->dep_map.name);
 		if (use_ww_ctx && ww_ctx)
 			ww_mutex_set_context_fastpath(ww, ww_ctx);
 		preempt_enable();
@@ -1054,6 +1061,7 @@ __mutex_lock_common(struct mutex *lock, long state, unsigned int subclass,
 
 		raw_spin_unlock(&current->blocked_lock);
 		raw_spin_unlock_irqrestore(&lock->wait_lock, flags);
+		trace_printk("%d blocks on %s", task_pid_nr(current), lock->dep_map.name);
 		schedule_preempt_disabled();
 
 		/*
@@ -1106,6 +1114,7 @@ acquired:
 skip_wait:
 	/* got the lock - cleanup and rejoice! */
 	lock_acquired(&lock->dep_map, ip);
+	trace_printk("%d locks %s", task_pid_nr(current), lock->dep_map.name);
 
 	if (use_ww_ctx && ww_ctx)
 		ww_mutex_lock_acquired(ww, ww_ctx);
@@ -1319,8 +1328,16 @@ static noinline void __sched __mutex_unlock_slowpath(struct mutex *lock, unsigne
 	next = current->proxied_by;
 	if (next) {
 		if (next->blocked_on != lock) {
+			trace_printk("%s: curr=%d next=%d blocked_on=%s",
+					__func__, task_pid_nr(current),
+					task_pid_nr(next),
+					next->blocked_on->dep_map.name);
 			next = NULL;
 		} else {
+			trace_printk("%s: curr=%d next=%d for lock=%s",
+					__func__, task_pid_nr(current),
+					task_pid_nr(next),
+					lock->dep_map.name);
 			wake_q_add(&wake_q, next);
 			current->proxied_by = NULL;
 		}
