@@ -342,11 +342,14 @@ void tick_nohz_dep_set_cpu(int cpu, enum tick_dep_bits bit)
 }
 EXPORT_SYMBOL_GPL(tick_nohz_dep_set_cpu);
 
+static void tick_nohz_full_update_tick_cpu(struct tick_sched *ts, int cpu);
+
 void tick_nohz_dep_clear_cpu(int cpu, enum tick_dep_bits bit)
 {
 	struct tick_sched *ts = per_cpu_ptr(&tick_cpu_sched, cpu);
 
 	atomic_andnot(BIT(bit), &ts->tick_dep_mask);
+	tick_nohz_full_update_tick_cpu(ts, cpu);
 }
 EXPORT_SYMBOL_GPL(tick_nohz_dep_clear_cpu);
 
@@ -870,11 +873,9 @@ static void tick_nohz_restart_sched_tick(struct tick_sched *ts, ktime_t now)
 	tick_nohz_restart(ts, now);
 }
 
-static void tick_nohz_full_update_tick(struct tick_sched *ts)
+static void tick_nohz_full_update_tick_cpu(struct tick_sched *ts, int cpu)
 {
 #ifdef CONFIG_NO_HZ_FULL
-	int cpu = smp_processor_id();
-
 	if (!tick_nohz_full_cpu(cpu))
 		return;
 
@@ -885,6 +886,15 @@ static void tick_nohz_full_update_tick(struct tick_sched *ts)
 		tick_nohz_stop_sched_tick(ts, cpu);
 	else if (ts->tick_stopped)
 		tick_nohz_restart_sched_tick(ts, ktime_get());
+#endif
+}
+
+static void tick_nohz_full_update_tick(struct tick_sched *ts)
+{
+#ifdef CONFIG_NO_HZ_FULL
+	int cpu = smp_processor_id();
+
+	tick_nohz_full_update_tick_cpu(ts, cpu);
 #endif
 }
 
