@@ -4156,7 +4156,6 @@ proxy(struct rq *rq, struct task_struct *next, struct rq_flags *rf)
 {
 	struct task_struct *p = next;
 	struct task_struct *owner = NULL;
-	struct task_struct *prev = rq->curr;
 	struct mutex *mutex;
 	struct rq *that_rq;
 	int this_cpu, that_cpu;
@@ -4293,10 +4292,7 @@ migrate_task:
 	 *
 	 *		* BOOM *
 	 */
-	prev = rq->curr;
-	rq->curr = next;
 	put_prev_task(rq, next);
-	rq->curr = prev;
 	if (rq->curr != rq->idle) {
 		rq->proxy = rq->idle;
 		set_tsk_need_resched(rq->idle);
@@ -4306,7 +4302,7 @@ migrate_task:
 		 */
 		return rq->idle;
 	}
-	rq->proxy = rq->curr;
+	rq->proxy = rq->idle;
 
 	for (; p; p = p->proxied_by) {
 		int wake_cpu = p->wake_cpu;
