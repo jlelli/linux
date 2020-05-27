@@ -7057,7 +7057,7 @@ simple:
 	do {
 		se = pick_next_entity(cfs_rq, NULL);
 		if (!se) 
-			goto idle;
+			return RETRY_TASK;
 		set_next_entity(cfs_rq, se);
 		cfs_rq = group_cfs_rq(se);
 	} while (cfs_rq);
