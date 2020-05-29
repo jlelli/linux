@@ -7017,6 +7017,8 @@ again:
 		}
 
 		se = pick_next_entity(cfs_rq, curr);
+		if (!se)
+			return NULL;
 		cfs_rq = group_cfs_rq(se);
 	} while (cfs_rq);
 
@@ -7056,8 +7058,8 @@ simple:
 
 	do {
 		se = pick_next_entity(cfs_rq, NULL);
-		if (!se) 
-			return RETRY_TASK;
+		if (!se)
+			return NULL;
 		set_next_entity(cfs_rq, se);
 		cfs_rq = group_cfs_rq(se);
 	} while (cfs_rq);
