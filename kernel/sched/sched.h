@@ -1838,7 +1838,7 @@ static inline void put_prev_task(struct rq *rq, struct task_struct *prev)
 
 static inline void set_next_task(struct rq *rq, struct task_struct *next)
 {
-	WARN_ON_ONCE(rq->curr != next);
+	WARN_ON_ONCE(!task_current_proxy(rq, next));
 	next->sched_class->set_next_task(rq, next, false);
 }
 
