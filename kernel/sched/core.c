@@ -4384,13 +4384,15 @@ owned_task:
 	 * deal with that.
 	 */
 	owner->blocked_on = NULL;
-	owner->state = TASK_RUNNING;
 	// XXX task_woken
+	trace_printk("proxy: owned_task woken pid=%d mutex=%s",
+			task_pid_nr(owner), mutex->dep_map.name);
 
 	/*
 	 * If @owner/@p is allowed to run on this CPU, make it go.
 	 */
 	if (cpumask_test_cpu(this_cpu, owner->cpus_ptr)) {
+		owner->state = TASK_RUNNING;
 		raw_spin_unlock(&p->blocked_lock);
 		raw_spin_unlock(&mutex->wait_lock);
 		return owner;
