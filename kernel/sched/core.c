@@ -1673,11 +1673,18 @@ static int __set_cpus_allowed_ptr(struct task_struct *p,
 			p->nr_cpus_allowed != 1);
 	}
 
-	/* Can the task run on the task's current CPU? If so, we're done */
-	if (cpumask_test_cpu(task_cpu(p), new_mask))
+	/*
+	 * Can the task run on the task's current CPU? If so, we're done
+	 *
+	 * We are also done if the task is currently acting as proxy (and
+	 * potentially has been migrated outside its current or previous
+	 * affinity mask.
+	 */
+	if (cpumask_test_cpu(task_cpu(p), new_mask) ||
+	    (task_is_blocked(p) && task_current_proxy(rq, p)))
 		goto out;
 
-	if (task_running(rq, p) || task_current_proxy(rq, p) || p->state == TASK_WAKING) {
+	if (task_running(rq, p) || p->state == TASK_WAKING) {
 		struct migration_arg arg = { p, dest_cpu };
 		/* Need help from migration thread: drop lock and wait. */
 		task_rq_unlock(rq, p, &rf);
@@ -2332,8 +2339,6 @@ static int ttwu_remote(struct task_struct *p, int wake_flags)
 			 * 'sleep' now and fail the direct wakeup so that the
 			 * normal wakeup path will fix things.
 			 */
-			p->on_rq = 0;
-			/* XXX [juril] SLEEP|NOCLOCK ? */
 			deactivate_task(rq, p, DEQUEUE_SLEEP);
 			resched_curr(rq);
 			raw_spin_unlock(&p->blocked_lock);
@@ -3742,6 +3747,15 @@ void scheduler_tick(void)
 	sched_clock_tick();
 
 	rq_lock(rq, &rf);
+
+#ifdef CONFIG_PROXY_EXEC
+	if (task_cpu(curr) != cpu) {
+		BUG_ON(!test_preempt_need_resched() &&
+		       !tif_need_resched());
+		rq_unlock(rq, &rf);
+		return;
+	}
+#endif
 
 	update_rq_clock(rq);
 	thermal_pressure = arch_scale_thermal_pressure(cpu_of(rq));
