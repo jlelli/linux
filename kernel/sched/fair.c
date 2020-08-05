@@ -5494,6 +5494,52 @@ static int sched_idle_cpu(int cpu)
 }
 #endif
 
+
+static void fair_server_watchdog(struct timer_list *list)
+{
+	struct rq *rq = container_of(list, struct rq, fair_server_wd);
+	struct rq_flags rf;
+
+	rq_lock_irqsave(rq, &rf);
+	trace_printk("fair server watchdog fired #%d", cpu_of(rq));
+
+	if (!rq->cfs.h_nr_running)
+		goto out;
+
+	update_rq_clock(rq);
+	dl_server_start(&rq->fair_server);
+	resched_curr(rq);
+
+out:
+	rq_unlock_irqrestore(rq, &rf);
+	return;
+}
+
+static inline void fair_server_watchdog_start(struct rq *rq)
+{
+	if (rq->fair_server_wd_running)
+		return;
+
+	timer_setup(&rq->fair_server_wd, fair_server_watchdog, 0);
+	rq->fair_server_wd.expires = jiffies + FAIR_SERVER_WATCHDOG_INTERVAL;
+	add_timer_on(&rq->fair_server_wd, cpu_of(rq));
+	rq->fair_server_wd_running = 1;
+
+	trace_printk("fair server watchdog started #%d", cpu_of(rq));
+}
+
+static inline void fair_server_watchdog_stop(struct rq *rq)
+{
+	if (!rq->fair_server_wd_running)
+		return;
+
+	del_timer(&rq->fair_server_wd);
+	rq->fair_server_wd_running = 0;
+
+	dl_server_stop(&rq->fair_server);
+	trace_printk("fair server watchdog stopped #%d", cpu_of(rq));
+}
+
 /*
  * The enqueue_task method is called before nr_running is
  * increased. Here we update the fair scheduling stats and
@@ -5515,7 +5561,7 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	util_est_enqueue(&rq->cfs, p);
 
 	if (!rq->cfs.h_nr_running)
-		dl_server_start(&rq->fair_server);
+		fair_server_watchdog_start(rq);
 
 	/*
 	 * If in_iowait is set, the code below may not trigger any cpufreq
@@ -5670,7 +5716,7 @@ static void dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 
 dequeue_throttle:
 	if (!rq->cfs.h_nr_running)
-		dl_server_stop(&rq->fair_server);
+		fair_server_watchdog_stop(rq);
 
 	util_est_dequeue(&rq->cfs, p, task_sleep);
 	hrtick_update(rq);
@@ -7178,6 +7224,8 @@ void fair_server_init(struct rq *rq)
 	dl_se->dl_period = 20 * TICK_NSEC;
 
 	dl_server_init(dl_se, rq, fair_server_has_tasks, fair_server_pick);
+
+	rq->fair_server_wd_running = 0;
 }
 
 /*

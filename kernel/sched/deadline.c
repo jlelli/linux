@@ -1358,10 +1358,15 @@ void dl_server_start(struct sched_dl_entity *dl_se)
 		setup_new_dl_entity(dl_se);
 	}
 	enqueue_dl_entity(dl_se, dl_se, ENQUEUE_WAKEUP);
+	trace_printk("fair server started #%d", cpu_of(dl_se->rq));
 }
 
 void dl_server_stop(struct sched_dl_entity *dl_se)
 {
+	if (RB_EMPTY_NODE(&dl_se->rb_node))
+		return;
+
+	trace_printk("fair server stopped #%d", cpu_of(dl_se->rq));
 	dequeue_dl_entity(dl_se, DEQUEUE_SLEEP);
 }
 
