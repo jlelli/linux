@@ -6830,7 +6830,8 @@ static void __setscheduler_params(struct task_struct *p,
 
 /* Actually do priority change: must hold pi & rq lock. */
 static void __setscheduler(struct rq *rq, struct task_struct *p,
-			   const struct sched_attr *attr, bool keep_boost)
+			   const struct sched_attr *attr, bool keep_boost,
+			   int new_effective_prio)
 {
 	/*
 	 * If params can't change scheduling class changes aren't allowed
@@ -6847,7 +6848,7 @@ static void __setscheduler(struct rq *rq, struct task_struct *p,
 	 */
 	p->prio = normal_prio(p);
 	if (keep_boost)
-		p->prio = rt_effective_prio(p, p->prio);
+		p->prio = new_effective_prio;
 
 	if (dl_prio(p->prio))
 		p->sched_class = &dl_sched_class;
@@ -6880,7 +6881,7 @@ static int __sched_setscheduler(struct task_struct *p,
 	int newprio = dl_policy(attr->sched_policy) ? MAX_DL_PRIO - 1 :
 		      MAX_RT_PRIO - 1 - attr->sched_priority;
 	int retval, oldprio, oldpolicy = -1, queued, running;
-	int new_effective_prio, policy = attr->sched_policy;
+	int new_effective_prio = newprio, policy = attr->sched_policy;
 	const struct sched_class *prev_class;
 	struct callback_head *head;
 	struct rq_flags rf;
@@ -7079,6 +7080,9 @@ change:
 	oldprio = p->prio;
 
 	if (pi) {
+		newprio = fair_policy(attr->sched_policy) ?
+			NICE_TO_PRIO(attr->sched_nice) : newprio;
+
 		/*
 		 * Take priority boosted tasks into account. If the new
 		 * effective priority is unchanged, we just store the new
@@ -7100,7 +7104,7 @@ change:
 
 	prev_class = p->sched_class;
 
-	__setscheduler(rq, p, attr, pi);
+	__setscheduler(rq, p, attr, pi, new_effective_prio);
 	__setscheduler_uclamp(p, attr);
 
 	if (queued) {
