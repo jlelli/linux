@@ -8,7 +8,6 @@
 #include <linux/highmem.h>
 #include <linux/dma-resv.h>
 #include <linux/module.h>
-
 #include <asm/smp.h>
 
 #include "i915_drv.h"
