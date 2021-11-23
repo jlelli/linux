@@ -297,6 +297,7 @@ struct sk_buff_head {
 
 	__u32		qlen;
 	spinlock_t	lock;
+	raw_spinlock_t	raw_lock;
 };
 
 struct sk_buff;
@@ -1950,6 +1951,12 @@ static inline void __skb_queue_head_init(struct sk_buff_head *list)
 static inline void skb_queue_head_init(struct sk_buff_head *list)
 {
 	spin_lock_init(&list->lock);
+	__skb_queue_head_init(list);
+}
+
+static inline void skb_queue_head_init_raw(struct sk_buff_head *list)
+{
+	raw_spin_lock_init(&list->raw_lock);
 	__skb_queue_head_init(list);
 }
 
@@ -4226,7 +4233,7 @@ static inline void skb_remcsum_process(struct sk_buff *skb, void *ptr,
 		return;
 	}
 
-	 if (unlikely(skb->ip_summed != CHECKSUM_COMPLETE)) {
+	if (unlikely(skb->ip_summed != CHECKSUM_COMPLETE)) {
 		__skb_checksum_complete(skb);
 		skb_postpull_rcsum(skb, skb->data, ptr - (void *)skb->data);
 	}
