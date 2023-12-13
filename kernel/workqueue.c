@@ -4416,6 +4416,12 @@ static void apply_wqattrs_commit(struct apply_wqattrs_ctx *ctx)
 	link_pwq(ctx->dfl_pwq);
 	swap(ctx->wq->dfl_pwq, ctx->dfl_pwq);
 
+	/* rescuer needs to respect wq cpumask changes */
+	if (ctx->wq->rescuer) {
+		set_cpus_allowed_ptr(ctx->wq->rescuer->task, ctx->attrs->cpumask);
+		wake_up_process(ctx->wq->rescuer->task);
+	}
+
 	mutex_unlock(&ctx->wq->mutex);
 }
 
