@@ -4359,7 +4359,17 @@ apply_wqattrs_prepare(struct workqueue_struct *wq,
 	 * it even if we don't use it immediately.
 	 */
 	copy_workqueue_attrs(new_attrs, attrs);
-	wqattrs_actualize_cpumask(new_attrs, unbound_cpumask);
+
+	/*
+	 * Is the user changing the general unbound_cpumask or is this a
+	 * WQ_SYSFS cpumask change?
+	 */
+	if (attrs == wq->unbound_attrs)
+		cpumask_copy(new_attrs->cpumask, unbound_cpumask);
+	else
+		wqattrs_actualize_cpumask(new_attrs, unbound_cpumask);
+
+	cpumask_and(new_attrs->cpumask, new_attrs->cpumask, cpu_possible_mask);
 	cpumask_copy(new_attrs->__pod_cpumask, new_attrs->cpumask);
 	ctx->dfl_pwq = alloc_unbound_pwq(wq, new_attrs);
 	if (!ctx->dfl_pwq)
@@ -4377,12 +4387,7 @@ apply_wqattrs_prepare(struct workqueue_struct *wq,
 		}
 	}
 
-	/* save the user configured attrs and sanitize it. */
-	copy_workqueue_attrs(new_attrs, attrs);
-	cpumask_and(new_attrs->cpumask, new_attrs->cpumask, cpu_possible_mask);
-	cpumask_copy(new_attrs->__pod_cpumask, new_attrs->cpumask);
 	ctx->attrs = new_attrs;
-
 	ctx->wq = wq;
 	return ctx;
 
