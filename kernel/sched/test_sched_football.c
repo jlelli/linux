@@ -83,6 +83,8 @@ struct rt_mutex *mutex_mid_list;
 #define test_unlock(x)		rt_mutex_unlock(x)
 #endif
 
+struct task_struct *referee_kth;
+
 static struct task_struct *create_fifo_thread(int (*threadfn)(void *data),
 					      void *data, char *name, int prio)
 {
@@ -153,6 +155,7 @@ static int defense_low_thread(void *arg)
 		schedule();
 	}
 	test_unlock(&mutex_low_list[tnum]);
+	atomic_dec(&players_ready);
 	return 0;
 }
 
@@ -170,6 +173,7 @@ static int defense_mid_thread(void *arg)
 	}
 	test_unlock(&mutex_low_list[tnum]);
 	test_unlock(&mutex_mid_list[tnum]);
+	atomic_dec(&players_ready);
 	return 0;
 }
 
@@ -182,6 +186,7 @@ static int offense_thread(void *arg)
 		schedule();
 		atomic_inc(&ball_pos);
 	}
+	atomic_dec(&players_ready);
 	return 0;
 }
 
@@ -197,6 +202,7 @@ static int defense_hi_thread(void *arg)
 		schedule();
 	}
 	test_unlock(&mutex_mid_list[tnum]);
+	atomic_dec(&players_ready);
 	return 0;
 }
 
@@ -210,6 +216,7 @@ static int crazy_fan_thread(void *arg)
 		udelay(1000);
 		msleep(2);
 	}
+	atomic_dec(&players_ready);
 	return 0;
 }
 
@@ -239,25 +246,38 @@ static int referee_thread(void *arg)
 		goto out;
 	pr_info("All players checked in! Starting game.\n");
 	atomic_set(&ball_pos, 0);
-	msleep(game_time * 1000);
+
+	schedule_timeout_interruptible(game_time * 1000);
+
 	final_pos = atomic_read(&ball_pos);
 	WRITE_ONCE(game_over, true);
 	pr_info("Final ball_pos: %ld\n",  final_pos);
 	WARN_ON(final_pos != 0);
+
+	while (atomic_read(&players_ready) > 0)
+		msleep(1);
+
 out:
+	kfree(mutex_mid_list);
+	kfree(mutex_low_list);
 	pr_info("Game Over!\n");
 	WRITE_ONCE(game_over, true);
 	return 0;
 }
 
+static void test_sched_football_exit(void)
+{
+	if (!READ_ONCE(game_over))
+		kthread_stop(referee_kth);
+}
+
 static int __init test_sched_football_init(void)
 {
-	struct task_struct *kth;
 	int i;
 
 #ifdef CONFIG_SCHED_PROXY_EXEC
 	/* Avoid running test if PROXY_EXEC is built in, but off via cmdline */
-	if (!sched_proxy_exec()) {
+	if (!IS_MODULE(CONFIG_SCHED_RT_INVARIANT_TEST) && !sched_proxy_exec()) {
 		pr_warn("CONFIG_SCHED_PROXY_EXEC=y but disabled via boot arg, skipping sched_football tests, as they can hang");
 		return -1;
 	}
@@ -278,8 +298,8 @@ static int __init test_sched_football_init(void)
 		test_lock_init(&mutex_mid_list[i]);
 	}
 
-	kth = create_fifo_thread(referee_thread, (void *)GAME_TIME, "referee-thread", REF_PRIO);
-	if (IS_ERR(kth))
+	referee_kth = create_fifo_thread(referee_thread, (void *)GAME_TIME, "referee-thread", REF_PRIO);
+	if (IS_ERR(referee_kth))
 		goto out_create_fifo;
 
 	return 0;
@@ -292,3 +312,4 @@ out:
 	return -1;
 }
 module_init(test_sched_football_init);
+module_exit(test_sched_football_exit);
