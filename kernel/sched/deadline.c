@@ -1624,6 +1624,50 @@ void dl_server_update(struct sched_dl_entity *dl_se, s64 delta_exec)
 		update_curr_dl_se(dl_se->rq, dl_se, delta_exec);
 }
 
+/*
+ * period (microseconds) over which the dl server works.
+ * default: 1s
+ */
+static int default_dl_server_period = 1000000;
+
+/*
+ * runtime (microseconds) availabe for tasks to run using the dl server.
+ * default: 0.05s
+ */
+static int default_dl_server_runtime = 50000;
+
+static int __init setup_dl_server_params(char *str)
+{
+	int ints[3], runtime_ns, period_ns;
+
+	if (!str)
+		return -EINVAL;
+
+	get_options(str, ARRAY_SIZE(ints), ints);
+
+	if (ints[0] != 2)
+		return -EINVAL;
+
+	runtime_ns = ints[1] * NSEC_PER_USEC;
+	period_ns  = ints[2] * NSEC_PER_USEC;
+
+	if (runtime_ns > period_ns ||
+	    period_ns > sysctl_sched_dl_period_max ||
+	    period_ns < sysctl_sched_dl_period_min) {
+		return  -EINVAL;
+	}
+
+	default_dl_server_runtime = ints[1];
+	default_dl_server_period  = ints[2];
+
+	pr_info("dl_server: runtime=%d period=%d\n",
+		default_dl_server_runtime,
+		default_dl_server_period);
+
+	return 1;
+}
+__setup("sched_dl_server_params=", setup_dl_server_params);
+
 void dl_server_start(struct sched_dl_entity *dl_se)
 {
 	struct rq *rq = dl_se->rq;
@@ -1634,8 +1678,8 @@ void dl_server_start(struct sched_dl_entity *dl_se)
 	 * this before getting generic.
 	 */
 	if (!dl_server(dl_se)) {
-		u64 runtime =  50 * NSEC_PER_MSEC;
-		u64 period = 1000 * NSEC_PER_MSEC;
+		u64 runtime = default_dl_server_runtime * NSEC_PER_USEC;
+		u64 period  = default_dl_server_period * NSEC_PER_USEC;
 
 		dl_server_apply_params(dl_se, runtime, period, 1);
 
