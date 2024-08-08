@@ -8662,6 +8662,9 @@ static struct task_struct *fair_server_pick_next(struct sched_dl_entity *dl_se)
 	return pick_next_task_fair(dl_se->rq, NULL, NULL);
 }
 
+unsigned long fair_server_period_max = (1UL << 22) * NSEC_PER_USEC; /* ~4 seconds */
+unsigned long fair_server_period_min = (100) * NSEC_PER_USEC;     /* 100 us */
+
 void fair_server_init(struct rq *rq)
 {
 	struct sched_dl_entity *dl_se = &rq->fair_server;

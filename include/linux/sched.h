@@ -594,6 +594,9 @@ struct sched_rt_entity {
 #endif
 } __randomize_layout;
 
+extern unsigned long fair_server_period_max;
+extern unsigned long fair_server_period_min;
+
 typedef bool (*dl_server_has_tasks_f)(struct sched_dl_entity *);
 typedef struct task_struct *(*dl_server_pick_f)(struct sched_dl_entity *);
 

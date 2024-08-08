@@ -338,9 +338,6 @@ enum dl_param {
 	DL_PERIOD,
 };
 
-static unsigned long fair_server_period_max = (1UL << 22) * NSEC_PER_USEC; /* ~4 seconds */
-static unsigned long fair_server_period_min = (100) * NSEC_PER_USEC;     /* 100 us */
-
 static ssize_t sched_fair_server_write(struct file *filp, const char __user *ubuf,
 				       size_t cnt, loff_t *ppos, enum dl_param param)
 {

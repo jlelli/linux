@@ -1652,8 +1652,8 @@ static int __init setup_dl_server_params(char *str)
 	period_ns  = ints[2] * NSEC_PER_USEC;
 
 	if (runtime_ns > period_ns ||
-	    period_ns > sysctl_sched_dl_period_max ||
-	    period_ns < sysctl_sched_dl_period_min) {
+	    period_ns > fair_server_period_max ||
+	    period_ns < fair_server_period_min) {
 		return  -EINVAL;
 	}
 
