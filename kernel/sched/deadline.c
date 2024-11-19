@@ -3319,13 +3319,24 @@ void __setparam_dl(struct task_struct *p, const struct sched_attr *attr)
 void __getparam_dl(struct task_struct *p, struct sched_attr *attr)
 {
 	struct sched_dl_entity *dl_se = &p->dl;
+	struct rq *rq = task_rq(p);
+	u64 rq_clk, ktime, adj_deadline;
+
+	guard(raw_spinlock_irq)(&rq->__lock);
+	update_rq_clock(rq);
+
+	rq_clk = rq_clock(rq);
+	ktime = ktime_to_ns(ktime_get());
 
 	attr->sched_priority = p->rt_priority;
-	attr->sched_runtime = dl_se->dl_runtime;
-	attr->sched_deadline = dl_se->dl_deadline;
+	attr->sched_runtime = dl_se->runtime;
+	adj_deadline = dl_se->deadline - rq_clk + ktime;
+	attr->sched_deadline = adj_deadline;
 	attr->sched_period = dl_se->dl_period;
 	attr->sched_flags &= ~SCHED_DL_FLAGS;
 	attr->sched_flags |= dl_se->flags;
+
+	trace_printk("pid=%d runtime=%lld deadline=%llu adj_deadline=%llu ktime=%llu rq_clock=%llu timer_clock=%llu", task_pid_nr(p), dl_se->runtime, dl_se->deadline, adj_deadline, ktime, rq_clk, ktime_to_ns(hrtimer_cb_get_time(&dl_se->dl_timer)));
 }
 
 /*
