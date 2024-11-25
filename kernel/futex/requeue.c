@@ -349,6 +349,8 @@ futex_proxy_trylock_atomic(u32 __user *pifutex, struct futex_hash_bucket *hb1,
 	return ret;
 }
 
+extern atomic64_t futex_hash_stats_collisions;
+
 /**
  * futex_requeue() - Requeue waiters from uaddr1 to uaddr2
  * @uaddr1:	source futex user address
@@ -585,8 +587,11 @@ retry_private:
 		if (task_count - nr_wake >= nr_requeue)
 			break;
 
-		if (!futex_match(&this->key, &key1))
+		if (!futex_match(&this->key, &key1)) {
+			if (!futex_key_is_private(&key1))
+				atomic64_inc(&futex_hash_stats_collisions);
 			continue;
+		}
 
 		/*
 		 * FUTEX_WAIT_REQUEUE_PI and FUTEX_CMP_REQUEUE_PI should always

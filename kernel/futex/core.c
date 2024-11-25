@@ -41,6 +41,8 @@
 #include <linux/slab.h>
 #include <linux/prctl.h>
 #include <linux/rcuref.h>
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 
 #include "futex.h"
 #include "../locking/rtmutex_common.h"
@@ -115,7 +117,7 @@ late_initcall(fail_futex_debugfs);
 
 #endif /* CONFIG_FAIL_FUTEX */
 
-static inline bool futex_key_is_private(union futex_key *key)
+bool futex_key_is_private(union futex_key *key)
 {
 	/*
 	 * Relies on get_futex_key() to set either bit for shared
@@ -143,6 +145,7 @@ struct futex_hash_bucket *futex_hash(union futex_key *key)
 		do {
 			hb_p = rcu_dereference(current->mm->futex_hash_bucket);
 		} while (hb_p && !rcuref_get(&hb_p->users));
+		current->mm->futex_hash_used = 1;
 	}
 
 	if (hb_p) {
@@ -570,6 +573,13 @@ void wait_for_owner_exiting(int ret, struct task_struct *exiting)
 	put_task_struct(exiting);
 }
 
+atomic64_t futex_hash_stats_used;
+atomic64_t futex_hash_stats_unused;
+atomic64_t futex_hash_stats_auto_create;
+atomic64_t futex_hash_stats_collisions;
+atomic64_t futex_hash_stats_local_queued;
+atomic64_t futex_hash_stats_global_queued;
+
 /**
  * __futex_unqueue() - Remove the futex_q from its futex_hash_bucket
  * @q:	The futex_q to unqueue
@@ -585,6 +595,12 @@ void __futex_unqueue(struct futex_q *q)
 	lockdep_assert_held(q->lock_ptr);
 
 	hb = container_of(q->lock_ptr, struct futex_hash_bucket, lock);
+
+	if (hb->hb_slot)
+		atomic64_dec(&futex_hash_stats_local_queued);
+	else
+		atomic64_dec(&futex_hash_stats_global_queued);
+
 	plist_del(&q->list, &hb->chain);
 	futex_hb_waiters_dec(hb);
 }
@@ -630,6 +646,11 @@ void futex_q_unlock(struct futex_hash_bucket *hb)
 void __futex_queue(struct futex_q *q, struct futex_hash_bucket *hb)
 {
 	int prio;
+
+	if (hb->hb_slot)
+		atomic64_inc(&futex_hash_stats_local_queued);
+	else
+		atomic64_inc(&futex_hash_stats_global_queued);
 
 	/*
 	 * The priority used to register this element is
@@ -1242,6 +1263,12 @@ void futex_hash_free(struct mm_struct *mm)
 	if (!hb_p)
 		return;
 	WARN_ON(rcuref_read(&hb_p->users) != 1);
+
+	if (mm->futex_hash_used)
+		atomic64_inc(&futex_hash_stats_used);
+	else
+		atomic64_inc(&futex_hash_stats_unused);
+
 	futex_hash_priv_put(hb_p);
 }
 
@@ -1329,6 +1356,7 @@ static int futex_hash_allocate(unsigned int hash_slots)
 
 int futex_hash_allocate_default(void)
 {
+	atomic64_inc(&futex_hash_stats_auto_create);
 	return futex_hash_allocate(16);
 }
 
@@ -1340,6 +1368,30 @@ static int futex_hash_get_slots(void)
 	hb_p = rcu_dereference(current->mm->futex_hash_bucket);
 	if (hb_p)
 		return hb_p->hash_mask + 1;
+	return 0;
+}
+
+static int proc_show_futex_stats(struct seq_file *seq, void *offset)
+{
+	long fh_used, fh_unused, fh_auto_create, fh_collisions,
+	     fh_global_use= 0, fh_local_queued, fh_global_queued;
+	int i;
+
+	fh_used = atomic64_read(&futex_hash_stats_used);
+	fh_unused = atomic64_read(&futex_hash_stats_unused);
+	fh_auto_create = atomic64_read(&futex_hash_stats_auto_create);
+	fh_collisions = atomic64_read(&futex_hash_stats_collisions);
+	fh_local_queued = atomic64_read(&futex_hash_stats_local_queued);
+	fh_global_queued = atomic64_read(&futex_hash_stats_global_queued);
+
+	for (i = 0; i < futex_hashsize; i++) {
+		if (futex_hb_waiters_pending(&futex_queues[i]))
+			fh_global_use++;
+	}
+
+	seq_printf(seq, "local queued: %ld used: %ld unsued: %ld auto: %ld | global queued: %ld buckets: %lu inuse: %ld collisions: %ld\n",
+		fh_local_queued, fh_used, fh_unused, fh_auto_create,
+		fh_global_queued, futex_hashsize, fh_global_use, fh_collisions);
 	return 0;
 }
 
@@ -1384,6 +1436,7 @@ static int __init futex_init(void)
 	for (i = 0; i < futex_hashsize; i++)
 		futex_hash_bucket_init(&futex_queues[i]);
 
+	proc_create_single("futex_stats", 0, NULL, proc_show_futex_stats);
 	return 0;
 }
 core_initcall(futex_init);

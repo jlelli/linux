@@ -107,6 +107,8 @@ static inline bool should_fail_futex(bool fshared)
 }
 #endif
 
+extern bool futex_key_is_private(union futex_key *key);
+
 /*
  * Hash buckets are shared by all the futex_keys that hash to the same
  * location.  Each key may have multiple futex_q structures, one for each task

@@ -901,6 +901,7 @@ struct mm_struct {
 
 		struct mutex				futex_hash_lock;
 		struct futex_hash_bucket_private	__rcu *futex_hash_bucket;
+		unsigned int				futex_hash_used;
 
 		unsigned long hiwater_rss; /* High-watermark of RSS usage */
 		unsigned long hiwater_vm;  /* High-water virtual memory usage */

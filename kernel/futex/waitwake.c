@@ -151,6 +151,8 @@ void futex_wake_mark(struct wake_q_head *wake_q, struct futex_q *q)
 	wake_q_add_safe(wake_q, p);
 }
 
+extern atomic64_t futex_hash_stats_collisions;
+
 /*
  * Wake up waiters matching bitset queued on this futex (uaddr).
  */
@@ -182,7 +184,9 @@ int futex_wake(u32 __user *uaddr, unsigned int flags, int nr_wake, u32 bitset)
 
 	spin_lock(&hb->lock);
 
+	trace_printk("futex key ptr=%llu word=%lu offset=%u", key.both.ptr, key.both.word, key.both.offset);
 	plist_for_each_entry_safe(this, next, &hb->chain, list) {
+		trace_printk("futex ptr=%llu word=%lu offset=%u pid=%d", this->key.both.ptr, this->key.both.word, this->key.both.offset, task_pid_nr(this->task));
 		if (futex_match (&this->key, &key)) {
 			if (this->pi_state || this->rt_waiter) {
 				ret = -EINVAL;
@@ -196,6 +200,9 @@ int futex_wake(u32 __user *uaddr, unsigned int flags, int nr_wake, u32 bitset)
 			this->wake(&wake_q, this);
 			if (++ret >= nr_wake)
 				break;
+		} else if (!futex_key_is_private(&key)) {
+			trace_printk("collision detected ptr=%llu word=%lu offset=%u pid=%d", this->key.both.ptr, this->key.both.word, this->key.both.offset, task_pid_nr(this->task));
+			atomic64_inc(&futex_hash_stats_collisions);
 		}
 	}
 
@@ -305,7 +312,9 @@ retry_private:
 		goto retry;
 	}
 
+	trace_printk("futex key1 ptr=%llu word=%lu offset=%u", key1.both.ptr, key1.both.word, key1.both.offset);
 	plist_for_each_entry_safe(this, next, &hb1->chain, list) {
+		trace_printk("futex ptr=%llu word=%lu offset=%u pid=%d", this->key.both.ptr, this->key.both.word, this->key.both.offset, task_pid_nr(this->task));
 		if (futex_match (&this->key, &key1)) {
 			if (this->pi_state || this->rt_waiter) {
 				ret = -EINVAL;
@@ -314,12 +323,17 @@ retry_private:
 			this->wake(&wake_q, this);
 			if (++ret >= nr_wake)
 				break;
+		} else if (!futex_key_is_private(&key1)) {
+			trace_printk("collision detected ptr=%llu word=%lu offset=%u pid=%d", this->key.both.ptr, this->key.both.word, this->key.both.offset, task_pid_nr(this->task));
+			atomic64_inc(&futex_hash_stats_collisions);
 		}
 	}
 
 	if (op_ret > 0) {
 		op_ret = 0;
+		trace_printk("futex key2 ptr=%llu word=%lu offset=%u", key2.both.ptr, key2.both.word, key2.both.offset);
 		plist_for_each_entry_safe(this, next, &hb2->chain, list) {
+			trace_printk("futex ptr=%llu word=%lu offset=%u pid=%d", this->key.both.ptr, this->key.both.word, this->key.both.offset, task_pid_nr(this->task));
 			if (futex_match (&this->key, &key2)) {
 				if (this->pi_state || this->rt_waiter) {
 					ret = -EINVAL;
@@ -328,6 +342,9 @@ retry_private:
 				this->wake(&wake_q, this);
 				if (++op_ret >= nr_wake2)
 					break;
+			} else if (!futex_key_is_private(&key2)) {
+				trace_printk("collision detected ptr=%llu word=%lu offset=%u pid=%d", this->key.both.ptr, this->key.both.word, this->key.both.offset, task_pid_nr(this->task));
+				atomic64_inc(&futex_hash_stats_collisions);
 			}
 		}
 		ret += op_ret;
