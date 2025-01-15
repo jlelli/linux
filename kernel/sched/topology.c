@@ -495,6 +495,9 @@ void rq_attach_root(struct rq *rq, struct root_domain *rd)
 	if (rq->rd) {
 		old_rd = rq->rd;
 
+		if (rq->fair_server.dl_server)
+			__dl_server_detach_root(&rq->fair_server, rq);
+
 		if (cpumask_test_cpu(rq->cpu, old_rd->online))
 			set_rq_offline(rq);
 

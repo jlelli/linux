@@ -1709,6 +1709,21 @@ void __dl_server_attach_root(struct sched_dl_entity *dl_se, struct rq *rq)
 	__dl_add(dl_b, new_bw, dl_bw_cpus(cpu));
 }
 
+void __dl_server_detach_root(struct sched_dl_entity *dl_se, struct rq *rq)
+{
+	u64 old_bw = dl_se->dl_bw;
+	int cpu = cpu_of(rq);
+	struct dl_bw *dl_b;
+
+	dl_b = dl_bw_of(cpu_of(rq));
+	guard(raw_spinlock)(&dl_b->lock);
+
+	if (!dl_bw_cpus(cpu))
+		return;
+
+	__dl_sub(dl_b, old_bw, dl_bw_cpus(cpu));
+}
+
 int dl_server_apply_params(struct sched_dl_entity *dl_se, u64 runtime, u64 period, bool init)
 {
 	u64 old_bw = init ? 0 : to_ratio(dl_se->dl_period, dl_se->dl_runtime);
