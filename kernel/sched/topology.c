@@ -137,6 +137,7 @@ static void sched_domain_debug(struct sched_domain *sd, int cpu)
 
 	if (!sd) {
 		printk(KERN_DEBUG "CPU%d attaching NULL sched-domain.\n", cpu);
+		printk(KERN_CONT "span=%*pbl\n", cpumask_pr_args(def_root_domain.span));
 		return;
 	}
 
@@ -2534,8 +2535,10 @@ build_sched_domains(const struct cpumask *cpu_map, struct sched_domain_attr *att
 	if (has_cluster)
 		static_branch_inc_cpuslocked(&sched_cluster_active);
 
-	if (rq && sched_debug_verbose)
+	if (rq && sched_debug_verbose) {
 		pr_info("root domain span: %*pbl\n", cpumask_pr_args(cpu_map));
+		pr_info("default domain span: %*pbl\n", cpumask_pr_args(def_root_domain.span));
+	}
 
 	ret = 0;
 error:
