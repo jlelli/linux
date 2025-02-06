@@ -224,15 +224,21 @@ void __dl_update(struct dl_bw *dl_b, s64 bw)
 static inline
 void __dl_sub(struct dl_bw *dl_b, u64 tsk_bw, int cpus)
 {
+	struct root_domain *rd = container_of(dl_b, struct root_domain, dl_bw);
+
 	dl_b->total_bw -= tsk_bw;
 	__dl_update(dl_b, (s32)tsk_bw / cpus);
+	printk_deferred("%s: cpus=%d tsk_bw=%llu total_bw=%llu span=%*pbl type=%s\n", __func__, cpus, tsk_bw, dl_b->total_bw, cpumask_pr_args(rd->span), (rd == &def_root_domain) ? "DEF" : "DYN");
 }
 
 static inline
 void __dl_add(struct dl_bw *dl_b, u64 tsk_bw, int cpus)
 {
+	struct root_domain *rd = container_of(dl_b, struct root_domain, dl_bw);
+
 	dl_b->total_bw += tsk_bw;
 	__dl_update(dl_b, -((s32)tsk_bw / cpus));
+	printk_deferred("%s: cpus=%d tsk_bw=%llu total_bw=%llu span=%*pbl type=%s\n", __func__, cpus, tsk_bw, dl_b->total_bw, cpumask_pr_args(rd->span), (rd == &def_root_domain) ? "DEF" : "DYN");
 }
 
 static inline bool
@@ -1707,6 +1713,7 @@ void __dl_server_attach_root(struct sched_dl_entity *dl_se, struct rq *rq)
 		return;
 
 	__dl_add(dl_b, new_bw, dl_bw_cpus(cpu));
+	printk_deferred("%s: cpu=%d rd_span=%*pbl total_bw=%llu\n", __func__, cpu_of(rq), cpumask_pr_args(rq->rd->span), dl_b->total_bw);
 }
 
 void __dl_server_detach_root(struct sched_dl_entity *dl_se, struct rq *rq)
@@ -1722,6 +1729,7 @@ void __dl_server_detach_root(struct sched_dl_entity *dl_se, struct rq *rq)
 		return;
 
 	__dl_sub(dl_b, old_bw, dl_bw_cpus(cpu));
+	printk_deferred("%s: cpu=%d rd_span=%*pbl total_bw=%llu\n", __func__, cpu_of(rq), cpumask_pr_args(rq->rd->span), dl_b->total_bw);
 }
 
 int dl_server_apply_params(struct sched_dl_entity *dl_se, u64 runtime, u64 period, bool init)
@@ -2995,6 +3003,8 @@ void dl_clear_root_domain(struct root_domain *rd)
 	guard(raw_spinlock_irqsave)(&rd->dl_bw.lock);
 	rd->dl_bw.total_bw = 0;
 
+	printk_deferred("%s: span=%*pbl type=%s\n", __func__, cpumask_pr_args(rd->span), (rd == &def_root_domain) ? "DEF" : "DYN");
+
 	/*
 	 * dl_server bandwidth is only restored when CPUs are attached to root
 	 * domains (after domains are created or CPUs moved back to the
@@ -3004,7 +3014,7 @@ void dl_clear_root_domain(struct root_domain *rd)
 		struct sched_dl_entity *dl_se = &cpu_rq(i)->fair_server;
 
 		if (dl_server(dl_se) && cpu_active(i))
-			rd->dl_bw.total_bw += dl_se->dl_bw;
+			__dl_add(&rd->dl_bw, dl_se->dl_bw, dl_bw_cpus(i));
 	}
 }
 
