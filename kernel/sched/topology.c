@@ -490,6 +490,7 @@ void rq_attach_root(struct rq *rq, struct root_domain *rd)
 {
 	struct root_domain *old_rd = NULL;
 	struct rq_flags rf;
+	char buf_old[64], buf_new[64];
 
 	rq_lock_irqsave(rq, &rf);
 
@@ -516,10 +517,16 @@ void rq_attach_root(struct rq *rq, struct root_domain *rd)
 	atomic_inc(&rd->refcount);
 	rq->rd = rd;
 
-	if (old_rd)
-		printk_deferred("%s: cpu=%d old_span=%*pbl new_span=%*pbl\n", __func__, cpu_of(rq), cpumask_pr_args(old_rd->span), cpumask_pr_args(rd->span));
-	else
-		printk_deferred("%s: cpu=%d old_span=NULL new_span=%*pbl\n", __func__, cpu_of(rq), cpumask_pr_args(rd->span));
+	if (old_rd) {
+		scnprintf(buf_old, sizeof(buf_old), "%*pbl", cpumask_pr_args(old_rd->span));
+		scnprintf(buf_new, sizeof(buf_new), "%*pbl", cpumask_pr_args(rd->span));
+		printk_deferred("%s: cpu=%d old_span=%s new_span=%s\n", __func__, cpu_of(rq), buf_old, buf_new);
+		trace_printk("cpu=%d old_span=%s new_span=%s\n", cpu_of(rq), buf_old, buf_new);
+	} else {
+		scnprintf(buf_new, sizeof(buf_new), "%*pbl", cpumask_pr_args(rd->span));
+		printk_deferred("%s: cpu=%d old_span=NULL new_span=%s\n", __func__, cpu_of(rq), buf_new);
+		trace_printk("cpu=%d old_span=NULL new_span=%s\n", cpu_of(rq), buf_new);
+	}
 
 	cpumask_set_cpu(rq->cpu, rd->span);
 	if (cpumask_test_cpu(rq->cpu, cpu_active_mask))

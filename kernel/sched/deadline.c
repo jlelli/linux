@@ -225,20 +225,30 @@ static inline
 void __dl_sub(struct dl_bw *dl_b, u64 tsk_bw, int cpus)
 {
 	struct root_domain *rd = container_of(dl_b, struct root_domain, dl_bw);
+	char buf[64];
 
 	dl_b->total_bw -= tsk_bw;
 	__dl_update(dl_b, (s32)tsk_bw / cpus);
-	printk_deferred("%s: cpus=%d tsk_bw=%llu total_bw=%llu span=%*pbl type=%s\n", __func__, cpus, tsk_bw, dl_b->total_bw, cpumask_pr_args(rd->span), (rd == &def_root_domain) ? "DEF" : "DYN");
+
+	scnprintf(buf, sizeof(buf), "%*pbl", cpumask_pr_args(rd->span));
+	printk_deferred("%s: cpus=%d tsk_bw=%llu total_bw=%llu span=%s type=%s\n", __func__, cpus, tsk_bw, dl_b->total_bw, buf, (rd == &def_root_domain) ? "DEF" : "DYN");
+	trace_printk("cpus=%d tsk_bw=%llu total_bw=%llu span=%s type=%s\n", cpus, tsk_bw, dl_b->total_bw, buf, (rd == &def_root_domain) ? "DEF" : "DYN");
+	trace_dump_stack(0);
 }
 
 static inline
 void __dl_add(struct dl_bw *dl_b, u64 tsk_bw, int cpus)
 {
 	struct root_domain *rd = container_of(dl_b, struct root_domain, dl_bw);
+	char buf[64];
 
 	dl_b->total_bw += tsk_bw;
 	__dl_update(dl_b, -((s32)tsk_bw / cpus));
-	printk_deferred("%s: cpus=%d tsk_bw=%llu total_bw=%llu span=%*pbl type=%s\n", __func__, cpus, tsk_bw, dl_b->total_bw, cpumask_pr_args(rd->span), (rd == &def_root_domain) ? "DEF" : "DYN");
+
+	scnprintf(buf, sizeof(buf), "%*pbl", cpumask_pr_args(rd->span));
+	printk_deferred("%s: cpus=%d tsk_bw=%llu total_bw=%llu span=%s type=%s\n", __func__, cpus, tsk_bw, dl_b->total_bw, buf, (rd == &def_root_domain) ? "DEF" : "DYN");
+	trace_printk("cpus=%d tsk_bw=%llu total_bw=%llu span=%s type=%s\n", cpus, tsk_bw, dl_b->total_bw, buf, (rd == &def_root_domain) ? "DEF" : "DYN");
+	trace_dump_stack(0);
 }
 
 static inline bool
@@ -1705,6 +1715,7 @@ void __dl_server_attach_root(struct sched_dl_entity *dl_se, struct rq *rq)
 	u64 new_bw = dl_se->dl_bw;
 	int cpu = cpu_of(rq);
 	struct dl_bw *dl_b;
+	char buf[64];
 
 	dl_b = dl_bw_of(cpu_of(rq));
 	guard(raw_spinlock)(&dl_b->lock);
@@ -1713,7 +1724,9 @@ void __dl_server_attach_root(struct sched_dl_entity *dl_se, struct rq *rq)
 		return;
 
 	__dl_add(dl_b, new_bw, dl_bw_cpus(cpu));
-	printk_deferred("%s: cpu=%d rd_span=%*pbl total_bw=%llu\n", __func__, cpu_of(rq), cpumask_pr_args(rq->rd->span), dl_b->total_bw);
+	scnprintf(buf, sizeof(buf), "%*pbl", cpumask_pr_args(rq->rd->span));
+	printk_deferred("%s: cpu=%d rd_span=%s total_bw=%llu\n", __func__, cpu_of(rq), buf, dl_b->total_bw);
+	trace_printk("cpu=%d rd_span=%s total_bw=%llu\n", cpu_of(rq), buf, dl_b->total_bw);
 }
 
 void __dl_server_detach_root(struct sched_dl_entity *dl_se, struct rq *rq)
@@ -1721,6 +1734,7 @@ void __dl_server_detach_root(struct sched_dl_entity *dl_se, struct rq *rq)
 	u64 old_bw = dl_se->dl_bw;
 	int cpu = cpu_of(rq);
 	struct dl_bw *dl_b;
+	char buf[64];
 
 	dl_b = dl_bw_of(cpu_of(rq));
 	guard(raw_spinlock)(&dl_b->lock);
@@ -1729,7 +1743,9 @@ void __dl_server_detach_root(struct sched_dl_entity *dl_se, struct rq *rq)
 		return;
 
 	__dl_sub(dl_b, old_bw, dl_bw_cpus(cpu));
-	printk_deferred("%s: cpu=%d rd_span=%*pbl total_bw=%llu\n", __func__, cpu_of(rq), cpumask_pr_args(rq->rd->span), dl_b->total_bw);
+	scnprintf(buf, sizeof(buf), "%*pbl", cpumask_pr_args(rq->rd->span));
+	printk_deferred("%s: cpu=%d rd_span=%s total_bw=%llu\n", __func__, cpu_of(rq), buf, dl_b->total_bw);
+	trace_printk("cpu=%d rd_span=%s total_bw=%llu\n", cpu_of(rq), buf, dl_b->total_bw);
 }
 
 int dl_server_apply_params(struct sched_dl_entity *dl_se, u64 runtime, u64 period, bool init)
@@ -2999,11 +3015,14 @@ void dl_add_task_root_domain(struct task_struct *p)
 void dl_clear_root_domain(struct root_domain *rd)
 {
 	int i;
+	char buf[64];
 
 	guard(raw_spinlock_irqsave)(&rd->dl_bw.lock);
 	rd->dl_bw.total_bw = 0;
 
-	printk_deferred("%s: span=%*pbl type=%s\n", __func__, cpumask_pr_args(rd->span), (rd == &def_root_domain) ? "DEF" : "DYN");
+	scnprintf(buf, sizeof(buf), "%*pbl", cpumask_pr_args(rd->span));
+	printk_deferred("%s: span=%s type=%s\n", __func__, buf, (rd == &def_root_domain) ? "DEF" : "DYN");
+	trace_printk("span=%s type=%s\n", buf, (rd == &def_root_domain) ? "DEF" : "DYN");
 
 	/*
 	 * dl_server bandwidth is only restored when CPUs are attached to root
@@ -3534,6 +3553,8 @@ static int dl_bw_manage(enum dl_bw_request req, int cpu, u64 dl_bw)
 		}
 		break;
 	case dl_bw_req_deactivate:
+		char buf[64];
+
 		/*
 		 * cpu is not off yet, but we need to do the math by
 		 * considering it off already (i.e., what would happen if we
@@ -3555,7 +3576,9 @@ static int dl_bw_manage(enum dl_bw_request req, int cpu, u64 dl_bw)
 		 * dl_servers we can discount, as tasks will be moved out the
 		 * offlined CPUs anyway.
 		 */
-		printk_deferred("%s: cpu=%d cap=%lu fair_server_bw=%llu total_bw=%llu dl_bw_cpus=%d type=%s span=%*pbl\n", __func__, cpu, cap, fair_server_bw, dl_b->total_bw, dl_bw_cpus(cpu), (cpu_rq(cpu)->rd == &def_root_domain) ? "DEF" : "DYN", cpumask_pr_args(cpu_rq(cpu)->rd->span));
+		scnprintf(buf, sizeof(buf), "%*pbl", cpumask_pr_args(cpu_rq(cpu)->rd->span));
+		printk_deferred("%s: cpu=%d cap=%lu fair_server_bw=%llu total_bw=%llu dl_bw_cpus=%d type=%s span=%s\n", __func__, cpu, cap, fair_server_bw, dl_b->total_bw, dl_bw_cpus(cpu), (cpu_rq(cpu)->rd == &def_root_domain) ? "DEF" : "DYN", buf);
+		trace_printk("cpu=%d cap=%lu fair_server_bw=%llu total_bw=%llu dl_bw_cpus=%d type=%s span=%s\n", cpu, cap, fair_server_bw, dl_b->total_bw, dl_bw_cpus(cpu), (cpu_rq(cpu)->rd == &def_root_domain) ? "DEF" : "DYN", buf);
 		if (dl_b->total_bw - fair_server_bw > 0) {
 			/*
 			 * Leaving at least one CPU for DEADLINE tasks seems a
