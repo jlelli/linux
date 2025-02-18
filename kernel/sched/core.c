@@ -8101,6 +8101,7 @@ static inline void balance_hotplug_wait(void)
 
 void set_rq_online(struct rq *rq)
 {
+	trace_printk("cpu=%d", rq->cpu);
 	if (!rq->online) {
 		const struct sched_class *class;
 
@@ -8116,6 +8117,7 @@ void set_rq_online(struct rq *rq)
 
 void set_rq_offline(struct rq *rq)
 {
+	trace_printk("cpu=%d", rq->cpu);
 	if (rq->online) {
 		const struct sched_class *class;
 
