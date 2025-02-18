@@ -497,11 +497,13 @@ void rq_attach_root(struct rq *rq, struct root_domain *rd)
 	if (rq->rd) {
 		old_rd = rq->rd;
 
-		if (rq->fair_server.dl_server)
-			__dl_server_detach_root(&rq->fair_server, rq);
-
-		if (cpumask_test_cpu(rq->cpu, old_rd->online))
+		if (cpumask_test_cpu(rq->cpu, old_rd->online)) {
 			set_rq_offline(rq);
+
+			if (rq->fair_server.dl_server)
+				__dl_server_detach_root(&rq->fair_server, rq);
+		}
+
 
 		cpumask_clear_cpu(rq->cpu, old_rd->span);
 
@@ -529,16 +531,17 @@ void rq_attach_root(struct rq *rq, struct root_domain *rd)
 	}
 
 	cpumask_set_cpu(rq->cpu, rd->span);
-	if (cpumask_test_cpu(rq->cpu, cpu_active_mask))
+	if (cpumask_test_cpu(rq->cpu, cpu_active_mask)) {
 		set_rq_online(rq);
 
-	/*
-	 * Because the rq is not a task, dl_add_task_root_domain() did not
-	 * move the fair server bw to the rd if it already started.
-	 * Add it now.
-	 */
-	if (rq->fair_server.dl_server)
-		__dl_server_attach_root(&rq->fair_server, rq);
+		/*
+		 * Because the rq is not a task, dl_add_task_root_domain() did not
+		 * move the fair server bw to the rd if it already started.
+		 * Add it now.
+		 */
+		if (rq->fair_server.dl_server)
+			__dl_server_attach_root(&rq->fair_server, rq);
+	}
 
 	rq_unlock_irqrestore(rq, &rf);
 
