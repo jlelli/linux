@@ -166,7 +166,7 @@ static inline unsigned long dl_bw_capacity(int i)
 	}
 }
 
-static inline bool dl_bw_visited(int cpu, u64 gen)
+bool dl_bw_visited(int cpu, u64 gen)
 {
 	struct root_domain *rd = cpu_rq(cpu)->rd;
 
@@ -207,7 +207,7 @@ static inline unsigned long dl_bw_capacity(int i)
 	return SCHED_CAPACITY_SCALE;
 }
 
-static inline bool dl_bw_visited(int cpu, u64 gen)
+bool dl_bw_visited(int cpu, u64 gen)
 {
 	return false;
 }
@@ -3037,6 +3037,11 @@ void dl_clear_root_domain(struct root_domain *rd)
 	}
 }
 
+void dl_clear_root_domain_cpu(int cpu) {
+	printk_deferred("%s: cpu=%d\n", __func__, cpu);
+	dl_clear_root_domain(cpu_rq(cpu)->rd);
+}
+
 #endif /* CONFIG_SMP */
 
 static void switched_from_dl(struct rq *rq, struct task_struct *p)
@@ -3216,7 +3221,7 @@ DEFINE_SCHED_CLASS(dl) = {
 };
 
 /* Used for dl_bw check and update, used under sched_rt_handler()::mutex */
-static u64 dl_generation;
+u64 dl_generation;
 
 int sched_dl_global_validate(void)
 {
