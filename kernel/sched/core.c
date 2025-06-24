@@ -8470,6 +8470,8 @@ void __init sched_init_smp(void)
 	init_sched_rt_class();
 	init_sched_dl_class();
 
+	sched_init_dl_servers();
+
 	sched_smp_initialized = true;
 }
 
@@ -8484,6 +8486,7 @@ early_initcall(migration_init);
 void __init sched_init_smp(void)
 {
 	sched_init_granularity();
+	sched_init_dl_servers();
 }
 #endif /* CONFIG_SMP */
 
