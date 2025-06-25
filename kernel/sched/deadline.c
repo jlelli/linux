@@ -824,6 +824,8 @@ static inline void setup_new_dl_entity(struct sched_dl_entity *dl_se)
 	struct dl_rq *dl_rq = dl_rq_of_se(dl_se);
 	struct rq *rq = rq_of_dl_rq(dl_rq);
 
+	update_rq_clock(rq);
+
 	WARN_ON(is_dl_boosted(dl_se));
 	WARN_ON(dl_time_before(rq_clock(rq), dl_se->deadline));
 
@@ -1686,8 +1688,10 @@ void sched_init_dl_servers(void)
 	for_each_online_cpu(cpu) {
 		u64 runtime =  50 * NSEC_PER_MSEC;
 		u64 period = 1000 * NSEC_PER_MSEC;
-
 		rq = cpu_rq(cpu);
+
+		guard(rq_lock_irq)(rq);
+
 		dl_se = &rq->fair_server;
 
 		WARN_ON(dl_server(dl_se));
@@ -1725,6 +1729,8 @@ int dl_server_apply_params(struct sched_dl_entity *dl_se, u64 runtime, u64 perio
 	unsigned long cap;
 	int retval = 0;
 	int cpus;
+
+	guard(rcu)();
 
 	dl_b = dl_bw_of(cpu);
 	guard(raw_spinlock)(&dl_b->lock);
