@@ -1649,7 +1649,7 @@ void dl_server_start(struct sched_dl_entity *dl_se)
 {
 	struct rq *rq = dl_se->rq;
 
-	if (!dl_se->dl_runtime)
+	if (!dl_server(dl_se))
 		return;
 
 	dl_se->dl_server_active = 1;
@@ -1660,7 +1660,7 @@ void dl_server_start(struct sched_dl_entity *dl_se)
 
 void dl_server_stop(struct sched_dl_entity *dl_se)
 {
-	if (!dl_se->dl_runtime)
+	if (!dl_server(dl_se) || !dl_se->dl_server_active)
 		return;
 
 	dequeue_dl_entity(dl_se, DEQUEUE_SLEEP);
