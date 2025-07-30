@@ -42,6 +42,10 @@ def print_dl_bws_info():
             print(f"  max_bw     : {dl_rq.max_bw}")
             print(f"  bw_ratio   : {dl_rq.bw_ratio}")
 
+            dl_bw = rq.rd.dl_bw
+
+            print(f"  total_bw   : {dl_bw.total_bw}")
+
         except drgn.FaultError as fe:
             print(f"  (CPU {cpu_id}: Fault accessing kernel memory: {fe})")
         except AttributeError as ae:
