@@ -394,69 +394,99 @@ test_bandwidth_admission_control_overflow() {
     return 0
 }
 
-test_fair_server_bandwidth_validation() {
-    local test_name="Fair server bandwidth validation against global RT bandwidth"
-    echo "Running test: $test_name"
+# Helper function to check fair_server interface availability
+# Sets global variables: FAIR_SERVER_CPU_DIR, FAIR_SERVER_RUNTIME_FILE, FAIR_SERVER_PERIOD_FILE, FAIR_SERVER_CPU_NUM
+# Returns 0 on success, 1 on skip (with message printed)
+fair_server_interface_check() {
+    local test_name="$1"
     
     # Check if fair_server debugfs interface exists
     local fair_server_dir="/sys/kernel/debug/sched/fair_server"
     if [ ! -d "$fair_server_dir" ]; then
         print_test_result "$test_name" "SKIP" "Fair server debugfs interface not found"
-        return 0
+        return 1
     fi
     
     # Find first available CPU
-    local cpu_dir=""
+    FAIR_SERVER_CPU_DIR=""
     for cpu_path in "$fair_server_dir"/cpu*; do
         if [ -d "$cpu_path" ]; then
-            cpu_dir="$cpu_path"
+            FAIR_SERVER_CPU_DIR="$cpu_path"
             break
         fi
     done
     
-    if [ -z "$cpu_dir" ]; then
+    if [ -z "$FAIR_SERVER_CPU_DIR" ]; then
         print_test_result "$test_name" "SKIP" "No fair server CPU directories found"
-        return 0
+        return 1
     fi
     
-    local cpu_num=$(basename "$cpu_dir" | sed 's/cpu//')
-    echo "  Testing with CPU $cpu_num"
+    FAIR_SERVER_CPU_NUM=$(basename "$FAIR_SERVER_CPU_DIR" | sed 's/cpu//')
+    echo "  Testing with CPU $FAIR_SERVER_CPU_NUM"
     
     # Check required files exist
-    local runtime_file="$cpu_dir/runtime"
-    local period_file="$cpu_dir/period"
+    FAIR_SERVER_RUNTIME_FILE="$FAIR_SERVER_CPU_DIR/runtime"
+    FAIR_SERVER_PERIOD_FILE="$FAIR_SERVER_CPU_DIR/period"
     
-    if [ ! -f "$runtime_file" ] || [ ! -f "$period_file" ]; then
+    if [ ! -f "$FAIR_SERVER_RUNTIME_FILE" ] || [ ! -f "$FAIR_SERVER_PERIOD_FILE" ]; then
         print_test_result "$test_name" "SKIP" "Fair server runtime/period files not found"
-        return 0
+        return 1
     fi
     
-    # Get current global RT bandwidth settings
-    local rt_runtime_us=$(cat /proc/sys/kernel/sched_rt_runtime_us 2>/dev/null)
-    local rt_period_us=$(cat /proc/sys/kernel/sched_rt_period_us 2>/dev/null)
+    return 0
+}
+
+# Helper function to read bandwidth settings
+# Sets global variables: RT_RUNTIME_US, RT_PERIOD_US, FAIR_RUNTIME_NS, FAIR_PERIOD_NS
+# Returns 0 on success, 1 on failure (with message printed)
+read_bandwidth_settings() {
+    local test_name="$1"
     
-    if [ -z "$rt_runtime_us" ] || [ -z "$rt_period_us" ]; then
+    # Get current global RT bandwidth settings
+    RT_RUNTIME_US=$(cat /proc/sys/kernel/sched_rt_runtime_us 2>/dev/null)
+    RT_PERIOD_US=$(cat /proc/sys/kernel/sched_rt_period_us 2>/dev/null)
+    
+    if [ -z "$RT_RUNTIME_US" ] || [ -z "$RT_PERIOD_US" ]; then
         print_test_result "$test_name" "FAIL" "Could not read global RT bandwidth settings"
         return 1
     fi
     
-    echo "  Global RT bandwidth: runtime=${rt_runtime_us}µs, period=${rt_period_us}µs"
+    echo "  Global RT bandwidth: runtime=${RT_RUNTIME_US}µs, period=${RT_PERIOD_US}µs"
     
     # Get current fair server settings (in nanoseconds)
-    local orig_runtime_ns=$(cat "$runtime_file" 2>/dev/null)
-    local orig_period_ns=$(cat "$period_file" 2>/dev/null)
+    FAIR_RUNTIME_NS=$(cat "$FAIR_SERVER_RUNTIME_FILE" 2>/dev/null)
+    FAIR_PERIOD_NS=$(cat "$FAIR_SERVER_PERIOD_FILE" 2>/dev/null)
     
-    if [ -z "$orig_runtime_ns" ] || [ -z "$orig_period_ns" ]; then
+    if [ -z "$FAIR_RUNTIME_NS" ] || [ -z "$FAIR_PERIOD_NS" ]; then
         print_test_result "$test_name" "FAIL" "Could not read current fair server settings"
         return 1
     fi
     
-    echo "  Current fair server: runtime=${orig_runtime_ns}ns, period=${orig_period_ns}ns"
+    echo "  Current fair server: runtime=${FAIR_RUNTIME_NS}ns, period=${FAIR_PERIOD_NS}ns"
+    return 0
+}
+
+# Helper function to calculate available non-RT bandwidth
+# Returns available bandwidth in microseconds
+calculate_available_bandwidth() {
+    echo $((RT_PERIOD_US - RT_RUNTIME_US))
+}
+
+test_fair_server_bandwidth_validation() {
+    local test_name="Fair server bandwidth validation against global RT bandwidth"
+    echo "Running test: $test_name"
     
-    # Calculate maximum allowed fair server bandwidth based on global RT settings
-    # Available bandwidth for non-RT = (rt_period_us - rt_runtime_us) / rt_period_us
-    # Fair server can use most of this, but we'll try to exceed it
-    local available_rt_us=$((rt_period_us - rt_runtime_us))
+    # Use helper functions for common setup
+    if ! fair_server_interface_check "$test_name"; then
+        return 0
+    fi
+    
+    if ! read_bandwidth_settings "$test_name"; then
+        return 1
+    fi
+    
+    # Calculate available bandwidth and attempt excessive allocation
+    local available_rt_us=$(calculate_available_bandwidth)
     
     if [ $available_rt_us -le 0 ]; then
         print_test_result "$test_name" "SKIP" "No bandwidth available for fair server (RT uses 100%)"
@@ -464,7 +494,7 @@ test_fair_server_bandwidth_validation() {
     fi
     
     # Convert current period to microseconds for calculation
-    local current_period_us=$((orig_period_ns / 1000))
+    local current_period_us=$((FAIR_PERIOD_NS / 1000))
     
     # Try to set fair server runtime to use more than available bandwidth
     # We'll try to use 110% of available bandwidth 
@@ -472,33 +502,33 @@ test_fair_server_bandwidth_validation() {
     local excessive_runtime_ns=$((excessive_runtime_us * 1000))
     
     # If period is different from RT period, scale accordingly
-    if [ $current_period_us -ne $rt_period_us ]; then
-        excessive_runtime_ns=$((excessive_runtime_ns * orig_period_ns / (rt_period_us * 1000)))
+    if [ $current_period_us -ne $RT_PERIOD_US ]; then
+        excessive_runtime_ns=$((excessive_runtime_ns * FAIR_PERIOD_NS / (RT_PERIOD_US * 1000)))
     fi
     
-    echo "  Available non-RT bandwidth: ${available_rt_us}µs per ${rt_period_us}µs period"
+    echo "  Available non-RT bandwidth: ${available_rt_us}µs per ${RT_PERIOD_US}µs period"
     echo "  Attempting to set excessive runtime: ${excessive_runtime_ns}ns (110% of available)"
     
     # Try to write the excessive runtime (this should fail)
     local write_failed=0
-    if echo "$excessive_runtime_ns" > "$runtime_file" 2>/dev/null; then
+    if echo "$excessive_runtime_ns" > "$FAIR_SERVER_RUNTIME_FILE" 2>/dev/null; then
         echo "    ERROR: Write succeeded when it should have failed"
         write_failed=0
         # Try to restore original value
-        echo "$orig_runtime_ns" > "$runtime_file" 2>/dev/null || true
+        echo "$FAIR_RUNTIME_NS" > "$FAIR_SERVER_RUNTIME_FILE" 2>/dev/null || true
     else
         echo "    Write correctly rejected"
         write_failed=1
     fi
     
     # Verify the original value is preserved
-    local current_runtime_ns=$(cat "$runtime_file" 2>/dev/null)
+    local current_runtime_ns=$(cat "$FAIR_SERVER_RUNTIME_FILE" 2>/dev/null)
     local value_preserved=0
-    if [ "$current_runtime_ns" = "$orig_runtime_ns" ]; then
+    if [ "$current_runtime_ns" = "$FAIR_RUNTIME_NS" ]; then
         echo "    Original runtime value preserved: ${current_runtime_ns}ns"
         value_preserved=1
     else
-        echo "    ERROR: Runtime value changed from ${orig_runtime_ns}ns to ${current_runtime_ns}ns"
+        echo "    ERROR: Runtime value changed from ${FAIR_RUNTIME_NS}ns to ${current_runtime_ns}ns"
         value_preserved=0
     fi
     
@@ -522,36 +552,8 @@ test_fair_server_bandwidth_increase_after_rt_reduction() {
     local test_name="Fair server bandwidth increase after reducing global RT bandwidth"
     echo "Running test: $test_name"
     
-    # Check if fair_server debugfs interface exists
-    local fair_server_dir="/sys/kernel/debug/sched/fair_server"
-    if [ ! -d "$fair_server_dir" ]; then
-        print_test_result "$test_name" "SKIP" "Fair server debugfs interface not found"
-        return 0
-    fi
-    
-    # Find first available CPU
-    local cpu_dir=""
-    for cpu_path in "$fair_server_dir"/cpu*; do
-        if [ -d "$cpu_path" ]; then
-            cpu_dir="$cpu_path"
-            break
-        fi
-    done
-    
-    if [ -z "$cpu_dir" ]; then
-        print_test_result "$test_name" "SKIP" "No fair server CPU directories found"
-        return 0
-    fi
-    
-    local cpu_num=$(basename "$cpu_dir" | sed 's/cpu//')
-    echo "  Testing with CPU $cpu_num"
-    
-    # Check required files exist
-    local runtime_file="$cpu_dir/runtime"
-    local period_file="$cpu_dir/period"
-    
-    if [ ! -f "$runtime_file" ] || [ ! -f "$period_file" ]; then
-        print_test_result "$test_name" "SKIP" "Fair server runtime/period files not found"
+    # Use helper functions for common setup
+    if ! fair_server_interface_check "$test_name"; then
         return 0
     fi
     
@@ -561,27 +563,17 @@ test_fair_server_bandwidth_increase_after_rt_reduction() {
         return 0
     fi
     
-    # Save original settings
-    local orig_rt_runtime_us=$(cat /proc/sys/kernel/sched_rt_runtime_us 2>/dev/null)
-    local orig_rt_period_us=$(cat /proc/sys/kernel/sched_rt_period_us 2>/dev/null)
-    local orig_fair_runtime_ns=$(cat "$runtime_file" 2>/dev/null)
-    local orig_fair_period_ns=$(cat "$period_file" 2>/dev/null)
-    
-    if [ -z "$orig_rt_runtime_us" ] || [ -z "$orig_rt_period_us" ] || [ -z "$orig_fair_runtime_ns" ] || [ -z "$orig_fair_period_ns" ]; then
-        print_test_result "$test_name" "FAIL" "Could not read original settings"
+    if ! read_bandwidth_settings "$test_name"; then
         return 1
     fi
     
-    echo "  Original RT bandwidth: runtime=${orig_rt_runtime_us}µs, period=${orig_rt_period_us}µs"
-    echo "  Original fair server: runtime=${orig_fair_runtime_ns}ns, period=${orig_fair_period_ns}ns"
-    
     # Calculate available bandwidth before modification
-    local orig_available_us=$((orig_rt_period_us - orig_rt_runtime_us))
+    local orig_available_us=$(calculate_available_bandwidth)
     echo "  Original available non-RT bandwidth: ${orig_available_us}µs"
     
     # Reduce RT bandwidth by 10% to create more space for fair_server
-    local new_rt_runtime_us=$((orig_rt_runtime_us * 90 / 100))
-    local new_available_us=$((orig_rt_period_us - new_rt_runtime_us))
+    local new_rt_runtime_us=$((RT_RUNTIME_US * 90 / 100))
+    local new_available_us=$((RT_PERIOD_US - new_rt_runtime_us))
     local additional_available_us=$((new_available_us - orig_available_us))
     
     echo "  Reducing RT runtime to ${new_rt_runtime_us}µs (90% of original)"
@@ -604,21 +596,21 @@ test_fair_server_bandwidth_increase_after_rt_reduction() {
     
     # Calculate new fair_server runtime that uses some of the additional bandwidth
     # Use 50% of the additional available bandwidth
-    local current_period_us=$((orig_fair_period_ns / 1000))
+    local current_period_us=$((FAIR_PERIOD_NS / 1000))
     local additional_runtime_us=$((additional_available_us * 50 / 100))
     
     # Scale to fair_server period if different from RT period
-    if [ $current_period_us -ne $orig_rt_period_us ]; then
-        additional_runtime_us=$((additional_runtime_us * current_period_us / orig_rt_period_us))
+    if [ $current_period_us -ne $RT_PERIOD_US ]; then
+        additional_runtime_us=$((additional_runtime_us * current_period_us / RT_PERIOD_US))
     fi
     
-    local new_fair_runtime_ns=$((orig_fair_runtime_ns + additional_runtime_us * 1000))
+    local new_fair_runtime_ns=$((FAIR_RUNTIME_NS + additional_runtime_us * 1000))
     
     echo "  Attempting to increase fair server runtime by ${additional_runtime_us}µs to ${new_fair_runtime_ns}ns"
     
     # Try to increase fair_server bandwidth (this should succeed)
     local fair_increase_failed=0
-    if echo "$new_fair_runtime_ns" > "$runtime_file" 2>/dev/null; then
+    if echo "$new_fair_runtime_ns" > "$FAIR_SERVER_RUNTIME_FILE" 2>/dev/null; then
         echo "    Fair server bandwidth increase accepted"
         fair_increase_failed=0
     else
@@ -627,7 +619,7 @@ test_fair_server_bandwidth_increase_after_rt_reduction() {
     fi
     
     # Verify the new value was set
-    local current_fair_runtime_ns=$(cat "$runtime_file" 2>/dev/null)
+    local current_fair_runtime_ns=$(cat "$FAIR_SERVER_RUNTIME_FILE" 2>/dev/null)
     local value_set_correctly=0
     if [ "$current_fair_runtime_ns" = "$new_fair_runtime_ns" ]; then
         echo "    New fair server runtime correctly set: ${current_fair_runtime_ns}ns"
@@ -639,22 +631,22 @@ test_fair_server_bandwidth_increase_after_rt_reduction() {
     
     # Restore original settings
     echo "  Restoring original settings..."
-    echo "$orig_fair_runtime_ns" > "$runtime_file" 2>/dev/null || true
-    echo "$orig_rt_runtime_us" > /proc/sys/kernel/sched_rt_runtime_us 2>/dev/null || true
+    echo "$FAIR_RUNTIME_NS" > "$FAIR_SERVER_RUNTIME_FILE" 2>/dev/null || true
+    echo "$RT_RUNTIME_US" > /proc/sys/kernel/sched_rt_runtime_us 2>/dev/null || true
     
     # Wait for restoration to take effect
     sleep 0.5
     
     # Verify restoration
     local restored_rt_runtime=$(cat /proc/sys/kernel/sched_rt_runtime_us 2>/dev/null)
-    local restored_fair_runtime=$(cat "$runtime_file" 2>/dev/null)
+    local restored_fair_runtime=$(cat "$FAIR_SERVER_RUNTIME_FILE" 2>/dev/null)
     
-    if [ "$restored_rt_runtime" = "$orig_rt_runtime_us" ] && [ "$restored_fair_runtime" = "$orig_fair_runtime_ns" ]; then
+    if [ "$restored_rt_runtime" = "$RT_RUNTIME_US" ] && [ "$restored_fair_runtime" = "$FAIR_RUNTIME_NS" ]; then
         echo "    Original settings successfully restored"
     else
         echo "    WARNING: Failed to fully restore original settings"
-        echo "      RT runtime: expected ${orig_rt_runtime_us}, got ${restored_rt_runtime}"
-        echo "      Fair runtime: expected ${orig_fair_runtime_ns}, got ${restored_fair_runtime}"
+        echo "      RT runtime: expected ${RT_RUNTIME_US}, got ${restored_rt_runtime}"
+        echo "      Fair runtime: expected ${FAIR_RUNTIME_NS}, got ${restored_fair_runtime}"
     fi
     
     # Test passes if:
