@@ -10,6 +10,7 @@
 # 3. Basic deadline parameters are accepted
 # 4. Bandwidth admission control works correctly
 # 5. Fair_server bandwidth validation respects global RT bandwidth limits
+# 6. Fair_server bandwidth increases work when global RT bandwidth is reduced
 
 CPUHOG_PROG="./cpuhog"
 TEST_DURATION=5
@@ -517,9 +518,177 @@ test_fair_server_bandwidth_validation() {
     return 0
 }
 
+test_fair_server_bandwidth_increase_after_rt_reduction() {
+    local test_name="Fair server bandwidth increase after reducing global RT bandwidth"
+    echo "Running test: $test_name"
+    
+    # Check if fair_server debugfs interface exists
+    local fair_server_dir="/sys/kernel/debug/sched/fair_server"
+    if [ ! -d "$fair_server_dir" ]; then
+        print_test_result "$test_name" "SKIP" "Fair server debugfs interface not found"
+        return 0
+    fi
+    
+    # Find first available CPU
+    local cpu_dir=""
+    for cpu_path in "$fair_server_dir"/cpu*; do
+        if [ -d "$cpu_path" ]; then
+            cpu_dir="$cpu_path"
+            break
+        fi
+    done
+    
+    if [ -z "$cpu_dir" ]; then
+        print_test_result "$test_name" "SKIP" "No fair server CPU directories found"
+        return 0
+    fi
+    
+    local cpu_num=$(basename "$cpu_dir" | sed 's/cpu//')
+    echo "  Testing with CPU $cpu_num"
+    
+    # Check required files exist
+    local runtime_file="$cpu_dir/runtime"
+    local period_file="$cpu_dir/period"
+    
+    if [ ! -f "$runtime_file" ] || [ ! -f "$period_file" ]; then
+        print_test_result "$test_name" "SKIP" "Fair server runtime/period files not found"
+        return 0
+    fi
+    
+    # Check if we can write to RT bandwidth files (need root)
+    if [ ! -w /proc/sys/kernel/sched_rt_runtime_us ] || [ ! -w /proc/sys/kernel/sched_rt_period_us ]; then
+        print_test_result "$test_name" "SKIP" "Cannot modify global RT bandwidth (need root)"
+        return 0
+    fi
+    
+    # Save original settings
+    local orig_rt_runtime_us=$(cat /proc/sys/kernel/sched_rt_runtime_us 2>/dev/null)
+    local orig_rt_period_us=$(cat /proc/sys/kernel/sched_rt_period_us 2>/dev/null)
+    local orig_fair_runtime_ns=$(cat "$runtime_file" 2>/dev/null)
+    local orig_fair_period_ns=$(cat "$period_file" 2>/dev/null)
+    
+    if [ -z "$orig_rt_runtime_us" ] || [ -z "$orig_rt_period_us" ] || [ -z "$orig_fair_runtime_ns" ] || [ -z "$orig_fair_period_ns" ]; then
+        print_test_result "$test_name" "FAIL" "Could not read original settings"
+        return 1
+    fi
+    
+    echo "  Original RT bandwidth: runtime=${orig_rt_runtime_us}µs, period=${orig_rt_period_us}µs"
+    echo "  Original fair server: runtime=${orig_fair_runtime_ns}ns, period=${orig_fair_period_ns}ns"
+    
+    # Calculate available bandwidth before modification
+    local orig_available_us=$((orig_rt_period_us - orig_rt_runtime_us))
+    echo "  Original available non-RT bandwidth: ${orig_available_us}µs"
+    
+    # Reduce RT bandwidth by 10% to create more space for fair_server
+    local new_rt_runtime_us=$((orig_rt_runtime_us * 90 / 100))
+    local new_available_us=$((orig_rt_period_us - new_rt_runtime_us))
+    local additional_available_us=$((new_available_us - orig_available_us))
+    
+    echo "  Reducing RT runtime to ${new_rt_runtime_us}µs (90% of original)"
+    echo "  New available non-RT bandwidth: ${new_available_us}µs (+${additional_available_us}µs)"
+    
+    # Set new RT bandwidth
+    local rt_change_failed=0
+    if ! echo "$new_rt_runtime_us" > /proc/sys/kernel/sched_rt_runtime_us 2>/dev/null; then
+        echo "    ERROR: Failed to reduce RT runtime"
+        rt_change_failed=1
+    fi
+    
+    if [ $rt_change_failed -eq 1 ]; then
+        print_test_result "$test_name" "FAIL" "Could not reduce global RT bandwidth"
+        return 1
+    fi
+    
+    # Wait a moment for the change to take effect
+    sleep 0.5
+    
+    # Calculate new fair_server runtime that uses some of the additional bandwidth
+    # Use 50% of the additional available bandwidth
+    local current_period_us=$((orig_fair_period_ns / 1000))
+    local additional_runtime_us=$((additional_available_us * 50 / 100))
+    
+    # Scale to fair_server period if different from RT period
+    if [ $current_period_us -ne $orig_rt_period_us ]; then
+        additional_runtime_us=$((additional_runtime_us * current_period_us / orig_rt_period_us))
+    fi
+    
+    local new_fair_runtime_ns=$((orig_fair_runtime_ns + additional_runtime_us * 1000))
+    
+    echo "  Attempting to increase fair server runtime by ${additional_runtime_us}µs to ${new_fair_runtime_ns}ns"
+    
+    # Try to increase fair_server bandwidth (this should succeed)
+    local fair_increase_failed=0
+    if echo "$new_fair_runtime_ns" > "$runtime_file" 2>/dev/null; then
+        echo "    Fair server bandwidth increase accepted"
+        fair_increase_failed=0
+    else
+        echo "    ERROR: Fair server bandwidth increase rejected"
+        fair_increase_failed=1
+    fi
+    
+    # Verify the new value was set
+    local current_fair_runtime_ns=$(cat "$runtime_file" 2>/dev/null)
+    local value_set_correctly=0
+    if [ "$current_fair_runtime_ns" = "$new_fair_runtime_ns" ]; then
+        echo "    New fair server runtime correctly set: ${current_fair_runtime_ns}ns"
+        value_set_correctly=1
+    else
+        echo "    ERROR: Fair server runtime not set correctly (expected: ${new_fair_runtime_ns}ns, got: ${current_fair_runtime_ns}ns)"
+        value_set_correctly=0
+    fi
+    
+    # Restore original settings
+    echo "  Restoring original settings..."
+    echo "$orig_fair_runtime_ns" > "$runtime_file" 2>/dev/null || true
+    echo "$orig_rt_runtime_us" > /proc/sys/kernel/sched_rt_runtime_us 2>/dev/null || true
+    
+    # Wait for restoration to take effect
+    sleep 0.5
+    
+    # Verify restoration
+    local restored_rt_runtime=$(cat /proc/sys/kernel/sched_rt_runtime_us 2>/dev/null)
+    local restored_fair_runtime=$(cat "$runtime_file" 2>/dev/null)
+    
+    if [ "$restored_rt_runtime" = "$orig_rt_runtime_us" ] && [ "$restored_fair_runtime" = "$orig_fair_runtime_ns" ]; then
+        echo "    Original settings successfully restored"
+    else
+        echo "    WARNING: Failed to fully restore original settings"
+        echo "      RT runtime: expected ${orig_rt_runtime_us}, got ${restored_rt_runtime}"
+        echo "      Fair runtime: expected ${orig_fair_runtime_ns}, got ${restored_fair_runtime}"
+    fi
+    
+    # Test passes if:
+    # 1. RT bandwidth reduction succeeded
+    # 2. Fair server bandwidth increase was accepted
+    # 3. The new value was set correctly
+    if [ $rt_change_failed -eq 0 ] && [ $fair_increase_failed -eq 0 ] && [ $value_set_correctly -eq 1 ]; then
+        print_test_result "$test_name" "PASS"
+    elif [ $rt_change_failed -eq 1 ]; then
+        print_test_result "$test_name" "FAIL" "Could not reduce global RT bandwidth"
+        return 1
+    elif [ $fair_increase_failed -eq 1 ]; then
+        print_test_result "$test_name" "FAIL" "Fair server bandwidth increase was rejected when it should have been accepted"
+        return 1
+    else
+        print_test_result "$test_name" "FAIL" "Fair server bandwidth was not set to the correct value"
+        return 1
+    fi
+    
+    return 0
+}
+
 cleanup() {
     # Kill any remaining cpuhog processes
     pkill -f cpuhog 2>/dev/null || true
+    
+    # Try to restore default RT bandwidth settings if they were modified
+    # Default values: 950000/1000000 (95%)
+    if [ -w /proc/sys/kernel/sched_rt_runtime_us ]; then
+        echo 950000 > /proc/sys/kernel/sched_rt_runtime_us 2>/dev/null || true
+    fi
+    if [ -w /proc/sys/kernel/sched_rt_period_us ]; then
+        echo 1000000 > /proc/sys/kernel/sched_rt_period_us 2>/dev/null || true
+    fi
 }
 
 main() {
@@ -549,6 +718,9 @@ main() {
     echo
     
     test_fair_server_bandwidth_validation
+    echo
+    
+    test_fair_server_bandwidth_increase_after_rt_reduction
     echo
     
     # Print summary
