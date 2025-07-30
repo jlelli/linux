@@ -9,6 +9,7 @@
 # 2. The task runs successfully under SCHED_DEADLINE
 # 3. Basic deadline parameters are accepted
 # 4. Bandwidth admission control works correctly
+# 5. Fair_server bandwidth validation respects global RT bandwidth limits
 
 CPUHOG_PROG="./cpuhog"
 TEST_DURATION=5
@@ -392,6 +393,130 @@ test_bandwidth_admission_control_overflow() {
     return 0
 }
 
+test_fair_server_bandwidth_validation() {
+    local test_name="Fair server bandwidth validation against global RT bandwidth"
+    echo "Running test: $test_name"
+    
+    # Check if fair_server debugfs interface exists
+    local fair_server_dir="/sys/kernel/debug/sched/fair_server"
+    if [ ! -d "$fair_server_dir" ]; then
+        print_test_result "$test_name" "SKIP" "Fair server debugfs interface not found"
+        return 0
+    fi
+    
+    # Find first available CPU
+    local cpu_dir=""
+    for cpu_path in "$fair_server_dir"/cpu*; do
+        if [ -d "$cpu_path" ]; then
+            cpu_dir="$cpu_path"
+            break
+        fi
+    done
+    
+    if [ -z "$cpu_dir" ]; then
+        print_test_result "$test_name" "SKIP" "No fair server CPU directories found"
+        return 0
+    fi
+    
+    local cpu_num=$(basename "$cpu_dir" | sed 's/cpu//')
+    echo "  Testing with CPU $cpu_num"
+    
+    # Check required files exist
+    local runtime_file="$cpu_dir/runtime"
+    local period_file="$cpu_dir/period"
+    
+    if [ ! -f "$runtime_file" ] || [ ! -f "$period_file" ]; then
+        print_test_result "$test_name" "SKIP" "Fair server runtime/period files not found"
+        return 0
+    fi
+    
+    # Get current global RT bandwidth settings
+    local rt_runtime_us=$(cat /proc/sys/kernel/sched_rt_runtime_us 2>/dev/null)
+    local rt_period_us=$(cat /proc/sys/kernel/sched_rt_period_us 2>/dev/null)
+    
+    if [ -z "$rt_runtime_us" ] || [ -z "$rt_period_us" ]; then
+        print_test_result "$test_name" "FAIL" "Could not read global RT bandwidth settings"
+        return 1
+    fi
+    
+    echo "  Global RT bandwidth: runtime=${rt_runtime_us}µs, period=${rt_period_us}µs"
+    
+    # Get current fair server settings (in nanoseconds)
+    local orig_runtime_ns=$(cat "$runtime_file" 2>/dev/null)
+    local orig_period_ns=$(cat "$period_file" 2>/dev/null)
+    
+    if [ -z "$orig_runtime_ns" ] || [ -z "$orig_period_ns" ]; then
+        print_test_result "$test_name" "FAIL" "Could not read current fair server settings"
+        return 1
+    fi
+    
+    echo "  Current fair server: runtime=${orig_runtime_ns}ns, period=${orig_period_ns}ns"
+    
+    # Calculate maximum allowed fair server bandwidth based on global RT settings
+    # Available bandwidth for non-RT = (rt_period_us - rt_runtime_us) / rt_period_us
+    # Fair server can use most of this, but we'll try to exceed it
+    local available_rt_us=$((rt_period_us - rt_runtime_us))
+    
+    if [ $available_rt_us -le 0 ]; then
+        print_test_result "$test_name" "SKIP" "No bandwidth available for fair server (RT uses 100%)"
+        return 0
+    fi
+    
+    # Convert current period to microseconds for calculation
+    local current_period_us=$((orig_period_ns / 1000))
+    
+    # Try to set fair server runtime to use more than available bandwidth
+    # We'll try to use 110% of available bandwidth 
+    local excessive_runtime_us=$((available_rt_us * 110 / 100))
+    local excessive_runtime_ns=$((excessive_runtime_us * 1000))
+    
+    # If period is different from RT period, scale accordingly
+    if [ $current_period_us -ne $rt_period_us ]; then
+        excessive_runtime_ns=$((excessive_runtime_ns * orig_period_ns / (rt_period_us * 1000)))
+    fi
+    
+    echo "  Available non-RT bandwidth: ${available_rt_us}µs per ${rt_period_us}µs period"
+    echo "  Attempting to set excessive runtime: ${excessive_runtime_ns}ns (110% of available)"
+    
+    # Try to write the excessive runtime (this should fail)
+    local write_failed=0
+    if echo "$excessive_runtime_ns" > "$runtime_file" 2>/dev/null; then
+        echo "    ERROR: Write succeeded when it should have failed"
+        write_failed=0
+        # Try to restore original value
+        echo "$orig_runtime_ns" > "$runtime_file" 2>/dev/null || true
+    else
+        echo "    Write correctly rejected"
+        write_failed=1
+    fi
+    
+    # Verify the original value is preserved
+    local current_runtime_ns=$(cat "$runtime_file" 2>/dev/null)
+    local value_preserved=0
+    if [ "$current_runtime_ns" = "$orig_runtime_ns" ]; then
+        echo "    Original runtime value preserved: ${current_runtime_ns}ns"
+        value_preserved=1
+    else
+        echo "    ERROR: Runtime value changed from ${orig_runtime_ns}ns to ${current_runtime_ns}ns"
+        value_preserved=0
+    fi
+    
+    # Test passes if:
+    # 1. The excessive write was rejected
+    # 2. The original value was preserved
+    if [ $write_failed -eq 1 ] && [ $value_preserved -eq 1 ]; then
+        print_test_result "$test_name" "PASS"
+    elif [ $write_failed -eq 0 ]; then
+        print_test_result "$test_name" "FAIL" "Fair server accepted excessive bandwidth"
+        return 1
+    else
+        print_test_result "$test_name" "FAIL" "Original fair server value not preserved"
+        return 1
+    fi
+    
+    return 0
+}
+
 cleanup() {
     # Kill any remaining cpuhog processes
     pkill -f cpuhog 2>/dev/null || true
@@ -421,6 +546,9 @@ main() {
     echo
     
     test_bandwidth_admission_control_overflow
+    echo
+    
+    test_fair_server_bandwidth_validation
     echo
     
     # Print summary
