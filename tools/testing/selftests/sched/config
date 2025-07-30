@@ -1,1 +1,15 @@
-# empty
+# Configuration options for SCHED_DEADLINE selftests
+#
+# SCHED_DEADLINE is built into the kernel by default and doesn't require
+# specific CONFIG options. However, these options are useful for scheduler
+# testing and debugging.
+
+# Scheduler debugging and statistics
+CONFIG_SCHEDSTATS=y
+CONFIG_SCHED_DEBUG=y
+
+# High resolution timers (recommended for deadline scheduling)
+CONFIG_HIGH_RES_TIMERS=y
+
+# Pressure stall information (useful for performance analysis)
+CONFIG_PSI=y
