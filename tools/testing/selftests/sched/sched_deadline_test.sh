@@ -12,6 +12,7 @@
 # 5. Fair_server bandwidth validation respects global RT bandwidth limits
 # 6. Fair_server bandwidth increases work when global RT bandwidth is reduced
 # 7. Deadline bandwidth introspection via drgn and kernel memory access
+# 8. SCHED_DEADLINE total_bw tracking with multiple running tasks
 
 CPUHOG_PROG="./cpuhog"
 TEST_DURATION=5
@@ -567,6 +568,154 @@ calculate_deadline_tasks_total_bandwidth() {
     echo $total_bandwidth
 }
 
+# Helper function to check drgn prerequisites and find dl_bw_dump.py tool
+# Returns: 0 if prerequisites are met, 1 otherwise
+# Sets global variable DL_BW_TOOL with the path to dl_bw_dump.py
+check_drgn_prerequisites() {
+    local test_name="$1"
+    
+    # Check if drgn is available
+    if ! command -v drgn >/dev/null 2>&1; then
+        print_test_result "$test_name" "SKIP" "drgn not available"
+        return 1
+    fi
+    
+    # Check if dl_bw_dump.py tool exists
+    # Try multiple possible locations relative to test execution
+    DL_BW_TOOL=""
+    local possible_paths=(
+        "tools/sched/dl_bw_dump.py"                   # If run from kernel root
+        "../../source/tools/sched/dl_bw_dump.py"            # If run from kernel build directory
+        "../../../sched/dl_bw_dump.py"                # If run from tools/testing/selftests/sched/
+        "../../../../tools/sched/dl_bw_dump.py"       # Alternative path structure
+    )
+    
+    for path in "${possible_paths[@]}"; do
+        if [ -f "$path" ]; then
+            DL_BW_TOOL="$path"
+            break
+        fi
+    done
+    
+    if [ -z "$DL_BW_TOOL" ]; then
+        print_test_result "$test_name" "SKIP" "dl_bw_dump.py tool not found in expected locations"
+        return 1
+    fi
+    
+    echo "  Found dl_bw_dump.py at: $DL_BW_TOOL"
+    
+    # Check for sufficient privileges to access kernel memory
+    if [ "$(id -u)" -ne 0 ]; then
+        print_test_result "$test_name" "SKIP" "Root privileges required for kernel memory access"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Helper function to run drgn and validate total_bw
+# Input: expected_total_bw (optional, if provided will validate exact match)
+# Returns: 0 if validation passes, 1 otherwise
+validate_total_bw_with_drgn() {
+    local expected_total_bw="$1"
+    local validation_failed=0
+    
+    echo "  Using drgn to introspect kernel deadline bandwidth information..."
+    
+    # Run dl_bw_dump.py via drgn and capture output
+    local drgn_output=$(drgn "$DL_BW_TOOL" 2>&1)
+    local drgn_exit_code=$?
+    
+    if [ $drgn_exit_code -ne 0 ]; then
+        echo "  ERROR: drgn execution failed: $drgn_output"
+        return 1
+    fi
+    
+    local cpu_count=0
+    local total_bw_found=0
+    
+    # Extract total_bw values for each CPU
+    while IFS= read -r line; do
+        if [[ "$line" =~ "From CPU:" ]]; then
+            cpu_count=$((cpu_count + 1))
+            local cpu_id=$(echo "$line" | grep -o "CPU: [0-9]*" | cut -d' ' -f2)
+            echo "    Analyzing CPU $cpu_id bandwidth values:"
+        elif [[ "$line" =~ total_bw ]]; then
+            local total_bw_raw=$(echo "$line" | awk '{print $NF}')
+            local total_bw=$(echo "$total_bw_raw" | sed 's/(u[0-9]*)//' | sed 's/[^0-9]//g')
+            total_bw_found=$((total_bw_found + 1))
+            echo "      total_bw: $total_bw_raw -> $total_bw (kernel format)"
+            
+            # Check if there are any SCHED_DEADLINE tasks running and validate total_bw accordingly
+            local deadline_tasks=$(ps -eo pid,policy,comm | awk '$2 == "DLN" {count++} END {print count+0}')
+            echo "        Found $deadline_tasks SCHED_DEADLINE tasks in system"
+            
+            if [ "$deadline_tasks" -eq 0 ]; then
+                # No deadline tasks running, total_bw should be 0
+                if [ -n "$total_bw" ] && [ "$total_bw" -ne 0 ]; then
+                    echo "        ✗ total_bw should be 0 when no SCHED_DEADLINE tasks are running, got: $total_bw"
+                    validation_failed=1
+                else
+                    echo "        ✓ total_bw is 0 as expected (no SCHED_DEADLINE tasks running)"
+                fi
+            else
+                # Deadline tasks are running, calculate expected total bandwidth and compare
+                echo "        Calculating expected total bandwidth from $deadline_tasks SCHED_DEADLINE task(s):"
+                local calculated_total_bw=$(calculate_deadline_tasks_total_bandwidth)
+                
+                if [ -n "$total_bw" ] && [ "$total_bw" -gt 0 ]; then
+                    echo "        ✓ total_bw is $total_bw with $deadline_tasks SCHED_DEADLINE tasks running"
+                    
+                    # If specific expected value was provided, use that, otherwise use calculated
+                    local expected_bw="${expected_total_bw:-$calculated_total_bw}"
+                    
+                    if [ "$expected_bw" -eq "$total_bw" ]; then
+                        echo "        ✓ Expected total bandwidth ($expected_bw) matches kernel total_bw ($total_bw)"
+                    else
+                        echo "        ✗ Bandwidth mismatch: expected $expected_bw vs kernel total_bw $total_bw"
+                        validation_failed=1
+                    fi
+                else
+                    echo "        ✗ total_bw is $total_bw but $deadline_tasks SCHED_DEADLINE tasks are running (expected > 0)"
+                    validation_failed=1
+                fi
+            fi
+        fi
+    done <<< "$drgn_output"
+    
+    # Validate that we found total_bw information
+    if [ $cpu_count -eq 0 ]; then
+        echo "  ERROR: No CPU bandwidth information found in drgn output"
+        return 1
+    fi
+    
+    if [ $total_bw_found -eq 0 ]; then
+        echo "  ERROR: No total_bw values found in drgn output"
+        return 1
+    fi
+    
+    echo "  Successfully validated total_bw for $cpu_count CPUs"
+    
+    return $validation_failed
+}
+
+# Helper function to generate random but sensible deadline parameters
+# Output: "runtime_ns deadline_ns period_ns" where runtime <= deadline <= period
+generate_random_deadline_params() {
+    # Generate period in range [10ms, 1000ms] (reasonable for testing)
+    local period_ms=$((10 + RANDOM % 991))  # 10-1000ms
+    local period_ns=$((period_ms * 1000000))
+    
+    # Generate deadline equal to period (common case)
+    local deadline_ns=$period_ns
+    
+    # Generate runtime as 5-50% of period (realistic workload)
+    local runtime_percent=$((5 + RANDOM % 46))  # 5-50%
+    local runtime_ns=$(((period_ns * runtime_percent) / 100))
+    
+    echo "$runtime_ns $deadline_ns $period_ns"
+}
+
 test_fair_server_bandwidth_validation() {
     local test_name="Fair server bandwidth validation against global RT bandwidth"
     echo "Running test: $test_name"
@@ -768,39 +917,8 @@ test_dl_bandwidth_introspection() {
     local test_name="Deadline bandwidth introspection via drgn and dl_bw_dump.py"
     echo "Running test: $test_name"
     
-    # Check if drgn is available
-    if ! command -v drgn >/dev/null 2>&1; then
-        print_test_result "$test_name" "SKIP" "drgn not available"
-        return 0
-    fi
-    
-    # Check if dl_bw_dump.py tool exists
-    # Try multiple possible locations relative to test execution
-    local dl_bw_tool=""
-    local possible_paths=(
-        "tools/sched/dl_bw_dump.py"                   # If run from kernel root
-        "../../source/tools/sched/dl_bw_dump.py"            # If run from kernel build directory
-        "../../../sched/dl_bw_dump.py"                # If run from tools/testing/selftests/sched/
-        "../../../../tools/sched/dl_bw_dump.py"       # Alternative path structure
-    )
-    
-    for path in "${possible_paths[@]}"; do
-        if [ -f "$path" ]; then
-            dl_bw_tool="$path"
-            break
-        fi
-    done
-    
-    if [ -z "$dl_bw_tool" ]; then
-        print_test_result "$test_name" "SKIP" "dl_bw_dump.py tool not found in expected locations"
-        return 0
-    fi
-    
-    echo "  Found dl_bw_dump.py at: $dl_bw_tool"
-    
-    # Check for sufficient privileges to access kernel memory
-    if [ "$(id -u)" -ne 0 ]; then
-        print_test_result "$test_name" "SKIP" "Root privileges required for kernel memory access"
+    # Check prerequisites using refactored helper
+    if ! check_drgn_prerequisites "$test_name"; then
         return 0
     fi
     
@@ -817,7 +935,7 @@ test_dl_bandwidth_introspection() {
     echo "  Using drgn to introspect kernel deadline bandwidth information..."
     
     # Run dl_bw_dump.py via drgn and capture output
-    local drgn_output=$(drgn "$dl_bw_tool" 2>&1)
+    local drgn_output=$(drgn "$DL_BW_TOOL" 2>&1)
     local drgn_exit_code=$?
     
     if [ $drgn_exit_code -ne 0 ]; then
@@ -979,6 +1097,157 @@ test_dl_bandwidth_introspection() {
     return 0
 }
 
+test_dl_bandwidth_tracking_with_multiple_tasks() {
+    local test_name="SCHED_DEADLINE total_bw tracking with multiple cpuhog tasks"
+    echo "Running test: $test_name"
+    
+    # Check prerequisites using refactored helper
+    if ! check_drgn_prerequisites "$test_name"; then
+        return 0
+    fi
+    
+    # Read current bandwidth settings for admission control validation
+    if ! read_bandwidth_settings "$test_name"; then
+        return 1
+    fi
+    
+    # Calculate available bandwidth for deadline tasks (same pool as RT tasks)
+    # DEADLINE tasks share sched_rt_runtime_us/sched_rt_period_us bandwidth with RT tasks
+    local available_bw_kernel=$(runtime_period_to_kernel_bw $((RT_RUNTIME_US * 1000)) $((RT_PERIOD_US * 1000)))
+    echo "  Available bandwidth for DEADLINE tasks: ${RT_RUNTIME_US}µs/${RT_PERIOD_US}µs -> $available_bw_kernel (kernel format)"
+    
+    # Start with baseline: no DEADLINE tasks should mean total_bw = 0
+    echo "  Step 1: Validate baseline (no DEADLINE tasks)"
+    if ! validate_total_bw_with_drgn; then
+        print_test_result "$test_name" "FAIL" "Baseline validation failed"
+        return 1
+    fi
+    
+    # Generate random task parameters for multiple DEADLINE tasks
+    local num_tasks=3
+    local task_pids=()
+    local expected_total_bw=0
+    local task_params=()
+    
+    echo "  Step 2: Starting $num_tasks SCHED_DEADLINE cpuhog tasks with random parameters"
+    
+    for i in $(seq 1 $num_tasks); do
+        # Generate random but sensible parameters
+        local params=$(generate_random_deadline_params)
+        local runtime_ns=$(echo "$params" | cut -d' ' -f1)
+        local deadline_ns=$(echo "$params" | cut -d' ' -f2)
+        local period_ns=$(echo "$params" | cut -d' ' -f3)
+        
+        # Calculate bandwidth in kernel format for this task
+        local task_kernel_bw=$(runtime_period_to_kernel_bw "$runtime_ns" "$period_ns")
+        
+        # Validate bandwidth admission (ensure we don't exceed available RT/DEADLINE bandwidth)
+        local new_total_bw=$((expected_total_bw + task_kernel_bw))
+        
+        # If this task would exceed available bandwidth, reduce its runtime
+        if [ $new_total_bw -gt $available_bw_kernel ]; then
+            # Scale down runtime to use at most 80% of remaining bandwidth
+            local remaining_bw_kernel=$((available_bw_kernel - expected_total_bw))
+            local max_task_bw_kernel=$(((remaining_bw_kernel * 80) / 100))  # 80% of remaining
+            
+            if [ $max_task_bw_kernel -gt 0 ] && [ $max_task_bw_kernel -lt $task_kernel_bw ]; then
+                # Calculate new runtime that would give us the max allowed bandwidth
+                # max_task_bw_kernel = (runtime_ns * BW_UNIT) / period_ns
+                # runtime_ns = (max_task_bw_kernel * period_ns) / BW_UNIT
+                local new_runtime_ns=$(((max_task_bw_kernel * period_ns) / 1048576))
+                if [ $new_runtime_ns -gt 0 ] && [ $new_runtime_ns -lt $runtime_ns ]; then
+                    runtime_ns=$new_runtime_ns
+		    # Recalculate bandwidth based on actual runtime to avoid approximation issues
+                    task_kernel_bw=$(runtime_period_to_kernel_bw "$runtime_ns" "$period_ns")
+                    echo "    Reduced task $i runtime to ${runtime_ns}ns to fit available bandwidth"
+                else
+                    echo "    Skipping task $i: insufficient remaining bandwidth"
+                    continue
+                fi
+            else
+                echo "    Skipping task $i: insufficient remaining bandwidth"
+                continue
+            fi
+        fi
+        
+        expected_total_bw=$((expected_total_bw + task_kernel_bw))
+        
+        echo "    Starting task $i: runtime=${runtime_ns}ns, deadline=${deadline_ns}ns, period=${period_ns}ns"
+        echo "      -> Bandwidth: $task_kernel_bw (kernel format)"
+        
+        # Start the DEADLINE task
+        chrt -d -T "$runtime_ns" -D "$deadline_ns" -P "$period_ns" 0 $CPUHOG_PROG &
+        local task_pid=$!
+        
+        if [ $? -eq 0 ]; then
+            task_pids+=("$task_pid")
+            task_params+=("$runtime_ns $deadline_ns $period_ns $task_kernel_bw")
+            echo "      -> Started with PID: $task_pid"
+        else
+            echo "      -> ERROR: Failed to start task $i"
+            expected_total_bw=$((expected_total_bw - task_kernel_bw))
+        fi
+        
+        # Small delay to ensure task startup
+        sleep 0.5
+    done
+    
+    local actual_tasks=${#task_pids[@]}
+    echo "  Successfully started $actual_tasks SCHED_DEADLINE tasks"
+    echo "  Expected total bandwidth: $expected_total_bw (kernel format)"
+    
+    if [ $actual_tasks -eq 0 ]; then
+        print_test_result "$test_name" "SKIP" "No DEADLINE tasks could be started"
+        return 0
+    fi
+    
+    # Allow tasks to settle and be accounted in bandwidth tracking
+    echo "  Step 3: Allowing tasks to settle (2 seconds)..."
+    sleep 2
+    
+    # Validate total_bw tracking with running tasks
+    echo "  Step 4: Validating total_bw tracking with $actual_tasks running tasks"
+    local validation_result=0
+    if ! validate_total_bw_with_drgn "$expected_total_bw"; then
+        validation_result=1
+    fi
+    
+    # Clean up tasks
+    echo "  Step 5: Cleaning up DEADLINE tasks"
+    for pid in "${task_pids[@]}"; do
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+            echo "    Terminated task PID: $pid"
+        fi
+    done
+    
+    # Wait for tasks to fully terminate and bandwidth to be released
+    echo "  Step 6: Waiting for bandwidth release (2 seconds)..."
+    sleep 2
+    
+    # Validate that total_bw returns to 0 after cleanup
+    echo "  Step 7: Validating total_bw cleanup (should return to 0)"
+    if ! validate_total_bw_with_drgn; then
+        validation_result=1
+    fi
+    
+    # Test passes if:
+    # 1. Baseline validation passed (total_bw = 0 with no tasks)
+    # 2. total_bw correctly tracked running tasks' bandwidth
+    # 3. total_bw returned to 0 after task cleanup
+    if [ $validation_result -eq 0 ]; then
+        print_test_result "$test_name" "PASS"
+        echo "  ✓ total_bw tracking validated through complete lifecycle"
+        echo "  ✓ Started $actual_tasks tasks with total bandwidth: $expected_total_bw"
+        echo "  ✓ Bandwidth properly released after task termination"
+    else
+        print_test_result "$test_name" "FAIL" "total_bw tracking validation failed"
+        return 1
+    fi
+    
+    return 0
+}
+
 cleanup() {
     # Kill any remaining cpuhog processes
     pkill -f cpuhog 2>/dev/null || true
@@ -1026,6 +1295,9 @@ main() {
     echo
     
     test_dl_bandwidth_introspection
+    echo
+    
+    test_dl_bandwidth_tracking_with_multiple_tasks
     echo
     
     # Print summary
