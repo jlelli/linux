@@ -20,13 +20,69 @@ RUNTIME_US=50000000    # 50ms runtime
 DEADLINE_US=100000000  # 100ms deadline  
 PERIOD_US=100000000    # 100ms period
 
+# Verbose mode (disabled by default)
+VERBOSE=0
+
 # Test result tracking
 PASSED=0
 FAILED=0
 
+# Usage information
+usage() {
+    echo "Usage: $0 [options]"
+    echo "Options:"
+    echo "  -v, --verbose    Enable verbose output (disabled by default)"
+    echo "  -h, --help       Show this help message"
+    echo
+    echo "Default mode shows only test names and PASS/FAIL results."
+    echo "Verbose mode shows detailed test execution information."
+}
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -v|--verbose)
+            VERBOSE=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            usage
+            exit 1
+            ;;
+    esac
+done
+
+# Verbose echo - only prints if verbose mode is enabled
+verbose_echo() {
+    if [ $VERBOSE -eq 1 ]; then
+        echo "$@"
+    fi
+}
+
+# Helper function to construct cpuhog command with conditional verbose flag
+cpuhog_cmd() {
+    local args="$@"
+    if [ $VERBOSE -eq 1 ]; then
+        echo "$CPUHOG_PROG $args -v"
+    else
+        echo "$CPUHOG_PROG $args"
+    fi
+}
+
 print_test_header() {
     echo "======================================"
     echo "SCHED_DEADLINE Basic Functionality Test"
+    if [ $VERBOSE -eq 1 ]; then
+        echo "Mode: Verbose (detailed output enabled)"
+    else
+        echo "Mode: Normal (test names and results only)"
+        echo "Use -v or --verbose for detailed output"
+    fi
     echo "======================================"
     echo
 }
@@ -49,7 +105,7 @@ print_test_result() {
 }
 
 check_prerequisites() {
-    echo "Checking prerequisites..."
+    verbose_echo "Checking prerequisites..."
     
     # Check if cpuhog binary exists
     if [ ! -x "$CPUHOG_PROG" ]; then
@@ -84,7 +140,7 @@ check_prerequisites() {
 }
 
 test_basic_deadline_scheduling() {
-    echo "Testing basic SCHED_DEADLINE scheduling..."
+    echo "Running test: Basic SCHED_DEADLINE scheduling"
     
     # Test 1: Schedule cpuhog with SCHED_DEADLINE and run for a short time
     local test_name="Schedule cpuhog with SCHED_DEADLINE"
@@ -92,7 +148,7 @@ test_basic_deadline_scheduling() {
     # Start cpuhog with SCHED_DEADLINE using chrt
     # Format: chrt -d -T runtime -D deadline -P period command
     timeout $((TEST_DURATION + 2)) chrt -d -T ${RUNTIME_US} -D ${DEADLINE_US} -P ${PERIOD_US} 0 \
-        $CPUHOG_PROG -t $TEST_DURATION -v &
+        $(cpuhog_cmd -t $TEST_DURATION) &
     local timeout_pid=$!
     
     if [ $? -ne 0 ]; then
@@ -144,7 +200,7 @@ test_basic_deadline_scheduling() {
 }
 
 test_deadline_parameter_validation() {
-    echo "Testing SCHED_DEADLINE parameter validation..."
+    echo "Running test: SCHED_DEADLINE parameter validation"
     
     # Test 3: Invalid parameters should be rejected
     local test_name="Invalid deadline parameters rejected"
@@ -170,7 +226,7 @@ test_deadline_parameter_validation() {
 }
 
 test_bandwidth_admission_control() {
-    echo "Testing SCHED_DEADLINE bandwidth admission control..."
+    echo "Running test: SCHED_DEADLINE bandwidth admission control"
     
     # Test: Start one cpuhog task per CPU with maximum allowed bandwidth
     local test_name="Bandwidth admission control with max allowed bandwidth per CPU"
@@ -184,7 +240,7 @@ test_bandwidth_admission_control() {
         return 1
     fi
     
-    echo "  RT bandwidth settings: runtime=${rt_runtime_us}µs, period=${rt_period_us}µs"
+    verbose_echo "  RT bandwidth settings: runtime=${rt_runtime_us}µs, period=${rt_period_us}µs"
     
     # Calculate maximum bandwidth ratio and use the full extent
     # Available bandwidth = rt_runtime_us / rt_period_us (typically 95%)
@@ -192,7 +248,7 @@ test_bandwidth_admission_control() {
     if [ $max_bandwidth_percent -eq 0 ]; then
         max_bandwidth_percent=1
     fi
-    echo "  Using full available bandwidth: ${max_bandwidth_percent}% per task"
+    verbose_echo "  Using full available bandwidth: ${max_bandwidth_percent}% per task"
     
     # Calculate task parameters: runtime/period should equal the bandwidth ratio
     # Use 100ms period for easier calculation
@@ -200,17 +256,17 @@ test_bandwidth_admission_control() {
     local task_runtime_us=$((task_period_us * max_bandwidth_percent / 100))
     local task_deadline_us=$task_period_us
     
-    echo "  Task parameters: runtime=${task_runtime_us}µs, deadline=${task_deadline_us}µs, period=${task_period_us}µs"
+    verbose_echo "  Task parameters: runtime=${task_runtime_us}µs, deadline=${task_deadline_us}µs, period=${task_period_us}µs"
     
     # Get number of online CPUs
     local num_cpus=$(nproc --all)
-    echo "  Number of online CPUs: $num_cpus"
+    verbose_echo "  Number of online CPUs: $num_cpus"
     
     local started_tasks=0
     
     # Start one cpuhog task per CPU
     for ((cpu=0; cpu<num_cpus; cpu++)); do
-        echo "  Starting cpuhog task $((cpu+1))/$num_cpus..."
+        verbose_echo "  Starting cpuhog task $((cpu+1))/$num_cpus..."
         
         chrt -d -T $task_runtime_us -D $task_deadline_us -P $task_period_us 0 \
             $CPUHOG_PROG >/dev/null 2>&1 &
@@ -218,9 +274,9 @@ test_bandwidth_admission_control() {
         
 	if kill -0 $cpuhog_pid 2>/dev/null; then
 		started_tasks=$((started_tasks + 1))
-		echo "    Task $((cpu+1)) started successfully"
+		verbose_echo "    Task $((cpu+1)) started successfully"
 	else
-		echo "    Task $((cpu+1)) failed to start"
+		verbose_echo "    Task $((cpu+1)) failed to start"
 		return 1
 	fi
     done
@@ -232,7 +288,7 @@ test_bandwidth_admission_control() {
     local running_tasks=0
     local cpuhog_pids=($(pgrep -x cpuhog))
     
-    echo "  Found ${#cpuhog_pids[@]} cpuhog processes"
+    verbose_echo "  Found ${#cpuhog_pids[@]} cpuhog processes"
     
     for cpuhog_pid in "${cpuhog_pids[@]}"; do
         if kill -0 $cpuhog_pid 2>/dev/null; then
@@ -240,15 +296,15 @@ test_bandwidth_admission_control() {
             local policy=$(cat /proc/$cpuhog_pid/sched 2>/dev/null | grep "policy" | awk '{print $3}')
             if [ "$policy" = "6" ]; then
                 running_tasks=$((running_tasks + 1))
-                echo "    cpuhog PID $cpuhog_pid confirmed using SCHED_DEADLINE"
+                verbose_echo "    cpuhog PID $cpuhog_pid confirmed using SCHED_DEADLINE"
             else
-                echo "    cpuhog PID $cpuhog_pid using policy $policy (not SCHED_DEADLINE)"
+                verbose_echo "    cpuhog PID $cpuhog_pid using policy $policy (not SCHED_DEADLINE)"
             fi
         fi
     done
     
-    echo "  Successfully started $started_tasks/$num_cpus tasks"
-    echo "  Currently running $running_tasks SCHED_DEADLINE tasks"
+    verbose_echo "  Successfully started $started_tasks/$num_cpus tasks"
+    verbose_echo "  Currently running $running_tasks SCHED_DEADLINE tasks"
     
     # Clean up background processes (cpuhog processes)
     for pid in "${cpuhog_pids[@]}"; do
@@ -274,7 +330,7 @@ test_bandwidth_admission_control() {
 }
 
 test_bandwidth_admission_control_overflow() {
-    echo "Testing SCHED_DEADLINE bandwidth admission control overflow rejection..."
+    echo "Running test: SCHED_DEADLINE bandwidth admission control overflow rejection"
     
     # Test: Start N-1 cpuhog tasks at max bandwidth, then try to add one more at max+1% (should fail)
     local test_name="Bandwidth admission control rejects overflow"
@@ -288,25 +344,25 @@ test_bandwidth_admission_control_overflow() {
         return 1
     fi
     
-    echo "  RT bandwidth settings: runtime=${rt_runtime_us}µs, period=${rt_period_us}µs"
+    verbose_echo "  RT bandwidth settings: runtime=${rt_runtime_us}µs, period=${rt_period_us}µs"
     
     # Calculate maximum bandwidth ratio
     local max_bandwidth_percent=$((rt_runtime_us * 100 / rt_period_us))
     if [ $max_bandwidth_percent -eq 0 ]; then
         max_bandwidth_percent=1
     fi
-    echo "  Using full available bandwidth: ${max_bandwidth_percent}% per task for N-1 tasks"
+    verbose_echo "  Using full available bandwidth: ${max_bandwidth_percent}% per task for N-1 tasks"
     
     # Calculate task parameters for maximum per-CPU bandwidth
     local task_period_us=100000000  # 100ms
     local task_runtime_us=$((task_period_us * max_bandwidth_percent / 100))
     local task_deadline_us=$task_period_us
     
-    echo "  Max task parameters: runtime=${task_runtime_us}µs, deadline=${task_deadline_us}µs, period=${task_period_us}µs"
+    verbose_echo "  Max task parameters: runtime=${task_runtime_us}µs, deadline=${task_deadline_us}µs, period=${task_period_us}µs"
     
     # Get number of online CPUs
     local num_cpus=$(nproc --all)
-    echo "  Number of online CPUs: $num_cpus"
+    verbose_echo "  Number of online CPUs: $num_cpus"
     
     if [ $num_cpus -lt 2 ]; then
         print_test_result "$test_name" "SKIP" "Need at least 2 CPUs for this test"
@@ -318,10 +374,10 @@ test_bandwidth_admission_control_overflow() {
     
     # Start N-1 cpuhog tasks at maximum per-CPU bandwidth
     local target_tasks=$((num_cpus - 1))
-    echo "  Starting $target_tasks cpuhog tasks at max bandwidth..."
+    verbose_echo "  Starting $target_tasks cpuhog tasks at max bandwidth..."
     
     for ((cpu=0; cpu<target_tasks; cpu++)); do
-        echo "  Starting cpuhog task $((cpu+1))/$target_tasks..."
+        verbose_echo "  Starting cpuhog task $((cpu+1))/$target_tasks..."
         
         chrt -d -T $task_runtime_us -D $task_deadline_us -P $task_period_us 0 \
             $CPUHOG_PROG >/dev/null 2>&1 &
@@ -330,9 +386,9 @@ test_bandwidth_admission_control_overflow() {
         if kill -0 $cpuhog_pid 2>/dev/null; then
             started_tasks=$((started_tasks + 1))
             task_pids+=($cpuhog_pid)
-            echo "    Task $((cpu+1)) started successfully (PID: $cpuhog_pid)"
+            verbose_echo "    Task $((cpu+1)) started successfully (PID: $cpuhog_pid)"
         else
-            echo "    Task $((cpu+1)) failed to start"
+            verbose_echo "    Task $((cpu+1)) failed to start"
             # Clean up any started tasks
             for pid in "${task_pids[@]}"; do
                 kill $pid 2>/dev/null || true
@@ -345,11 +401,11 @@ test_bandwidth_admission_control_overflow() {
     # Wait a moment for all tasks to be scheduled
     sleep 1
     
-    echo "  Successfully started $started_tasks/$target_tasks tasks at max bandwidth"
+    verbose_echo "  Successfully started $started_tasks/$target_tasks tasks at max bandwidth"
     
     # Now try to start one additional task at max bandwidth + 1% (should fail)
     local overflow_runtime_us=$((task_runtime_us * 101 / 100))  # Add 1%
-    echo "  Attempting to start overflow task with runtime=${overflow_runtime_us}µs (${max_bandwidth_percent}% + 1%)..."
+    verbose_echo "  Attempting to start overflow task with runtime=${overflow_runtime_us}µs (${max_bandwidth_percent}% + 1%)..."
     
     # This should fail due to bandwidth admission control
     local overflow_failed=0
@@ -360,15 +416,15 @@ test_bandwidth_admission_control_overflow() {
         # Check if it actually started and is running
         sleep 0.5
         if kill -0 $overflow_pid 2>/dev/null; then
-            echo "    ERROR: Overflow task started successfully (should have been rejected)"
+            verbose_echo "    ERROR: Overflow task started successfully (should have been rejected)"
             kill $overflow_pid 2>/dev/null || true
             overflow_failed=0
         else
-            echo "    Overflow task was started but died (likely due to bandwidth rejection)"
+            verbose_echo "    Overflow task was started but died (likely due to bandwidth rejection)"
             overflow_failed=1
         fi
     else
-        echo "    Overflow task correctly rejected by chrt"
+        verbose_echo "    Overflow task correctly rejected by chrt"
         overflow_failed=1
     fi
     
@@ -424,7 +480,7 @@ fair_server_interface_check() {
     fi
     
     FAIR_SERVER_CPU_NUM=$(basename "$FAIR_SERVER_CPU_DIR" | sed 's/cpu//')
-    echo "  Testing with CPU $FAIR_SERVER_CPU_NUM"
+    verbose_echo "  Testing with CPU $FAIR_SERVER_CPU_NUM"
     
     # Check required files exist
     FAIR_SERVER_RUNTIME_FILE="$FAIR_SERVER_CPU_DIR/runtime"
@@ -453,7 +509,7 @@ read_bandwidth_settings() {
         return 1
     fi
     
-    echo "  Global RT bandwidth: runtime=${RT_RUNTIME_US}µs, period=${RT_PERIOD_US}µs"
+    verbose_echo "  Global RT bandwidth: runtime=${RT_RUNTIME_US}µs, period=${RT_PERIOD_US}µs"
     
     # Get current fair server settings (in nanoseconds)
     FAIR_RUNTIME_NS=$(cat "$FAIR_SERVER_RUNTIME_FILE" 2>/dev/null)
@@ -464,7 +520,7 @@ read_bandwidth_settings() {
         return 1
     fi
     
-    echo "  Current fair server: runtime=${FAIR_RUNTIME_NS}ns, period=${FAIR_PERIOD_NS}ns"
+    verbose_echo "  Current fair server: runtime=${FAIR_RUNTIME_NS}ns, period=${FAIR_PERIOD_NS}ns"
     return 0
 }
 
@@ -560,11 +616,11 @@ calculate_deadline_tasks_total_bandwidth() {
         if [ -n "$task_bandwidth" ] && [ "$task_bandwidth" -gt 0 ]; then
             total_bandwidth=$((total_bandwidth + task_bandwidth))
             task_count=$((task_count + 1))
-            echo "        Task PID $pid: runtime=${runtime_ns}ns, period=${period_ns}ns, bandwidth=${task_bandwidth}" >&2
+            verbose_echo "        Task PID $pid: runtime=${runtime_ns}ns, period=${period_ns}ns, bandwidth=${task_bandwidth}" >&2
         fi
     done
     
-    echo "        Calculated total bandwidth from $task_count DEADLINE tasks: $total_bandwidth" >&2
+    verbose_echo "        Calculated total bandwidth from $task_count DEADLINE tasks: $total_bandwidth" >&2
     echo $total_bandwidth
 }
 
@@ -602,7 +658,7 @@ check_drgn_prerequisites() {
         return 1
     fi
     
-    echo "  Found dl_bw_dump.py at: $DL_BW_TOOL"
+    verbose_echo "  Found dl_bw_dump.py at: $DL_BW_TOOL"
     
     # Check for sufficient privileges to access kernel memory
     if [ "$(id -u)" -ne 0 ]; then
@@ -620,14 +676,14 @@ validate_total_bw_with_drgn() {
     local expected_total_bw="$1"
     local validation_failed=0
     
-    echo "  Using drgn to introspect kernel deadline bandwidth information..."
+    verbose_echo "  Using drgn to introspect kernel deadline bandwidth information..."
     
     # Run dl_bw_dump.py via drgn and capture output
     local drgn_output=$(drgn "$DL_BW_TOOL" 2>&1)
     local drgn_exit_code=$?
     
     if [ $drgn_exit_code -ne 0 ]; then
-        echo "  ERROR: drgn execution failed: $drgn_output"
+        verbose_echo "  ERROR: drgn execution failed: $drgn_output"
         return 1
     fi
     
@@ -639,44 +695,44 @@ validate_total_bw_with_drgn() {
         if [[ "$line" =~ "From CPU:" ]]; then
             cpu_count=$((cpu_count + 1))
             local cpu_id=$(echo "$line" | grep -o "CPU: [0-9]*" | cut -d' ' -f2)
-            echo "    Analyzing CPU $cpu_id bandwidth values:"
+            verbose_echo "    Analyzing CPU $cpu_id bandwidth values:"
         elif [[ "$line" =~ total_bw ]]; then
             local total_bw_raw=$(echo "$line" | awk '{print $NF}')
             local total_bw=$(echo "$total_bw_raw" | sed 's/(u[0-9]*)//' | sed 's/[^0-9]//g')
             total_bw_found=$((total_bw_found + 1))
-            echo "      total_bw: $total_bw_raw -> $total_bw (kernel format)"
+            verbose_echo "      total_bw: $total_bw_raw -> $total_bw (kernel format)"
             
             # Check if there are any SCHED_DEADLINE tasks running and validate total_bw accordingly
             local deadline_tasks=$(ps -eo pid,policy,comm | awk '$2 == "DLN" {count++} END {print count+0}')
-            echo "        Found $deadline_tasks SCHED_DEADLINE tasks in system"
+            verbose_echo "        Found $deadline_tasks SCHED_DEADLINE tasks in system"
             
             if [ "$deadline_tasks" -eq 0 ]; then
                 # No deadline tasks running, total_bw should be 0
                 if [ -n "$total_bw" ] && [ "$total_bw" -ne 0 ]; then
-                    echo "        ✗ total_bw should be 0 when no SCHED_DEADLINE tasks are running, got: $total_bw"
+                    verbose_echo "        ✗ total_bw should be 0 when no SCHED_DEADLINE tasks are running, got: $total_bw"
                     validation_failed=1
                 else
-                    echo "        ✓ total_bw is 0 as expected (no SCHED_DEADLINE tasks running)"
+                    verbose_echo "        ✓ total_bw is 0 as expected (no SCHED_DEADLINE tasks running)"
                 fi
             else
                 # Deadline tasks are running, calculate expected total bandwidth and compare
-                echo "        Calculating expected total bandwidth from $deadline_tasks SCHED_DEADLINE task(s):"
+                verbose_echo "        Calculating expected total bandwidth from $deadline_tasks SCHED_DEADLINE task(s):"
                 local calculated_total_bw=$(calculate_deadline_tasks_total_bandwidth)
                 
                 if [ -n "$total_bw" ] && [ "$total_bw" -gt 0 ]; then
-                    echo "        ✓ total_bw is $total_bw with $deadline_tasks SCHED_DEADLINE tasks running"
+                    verbose_echo "        ✓ total_bw is $total_bw with $deadline_tasks SCHED_DEADLINE tasks running"
                     
                     # If specific expected value was provided, use that, otherwise use calculated
                     local expected_bw="${expected_total_bw:-$calculated_total_bw}"
                     
                     if [ "$expected_bw" -eq "$total_bw" ]; then
-                        echo "        ✓ Expected total bandwidth ($expected_bw) matches kernel total_bw ($total_bw)"
+                        verbose_echo "        ✓ Expected total bandwidth ($expected_bw) matches kernel total_bw ($total_bw)"
                     else
-                        echo "        ✗ Bandwidth mismatch: expected $expected_bw vs kernel total_bw $total_bw"
+                        verbose_echo "        ✗ Bandwidth mismatch: expected $expected_bw vs kernel total_bw $total_bw"
                         validation_failed=1
                     fi
                 else
-                    echo "        ✗ total_bw is $total_bw but $deadline_tasks SCHED_DEADLINE tasks are running (expected > 0)"
+                    verbose_echo "        ✗ total_bw is $total_bw but $deadline_tasks SCHED_DEADLINE tasks are running (expected > 0)"
                     validation_failed=1
                 fi
             fi
@@ -685,16 +741,16 @@ validate_total_bw_with_drgn() {
     
     # Validate that we found total_bw information
     if [ $cpu_count -eq 0 ]; then
-        echo "  ERROR: No CPU bandwidth information found in drgn output"
+        verbose_echo "  ERROR: No CPU bandwidth information found in drgn output"
         return 1
     fi
     
     if [ $total_bw_found -eq 0 ]; then
-        echo "  ERROR: No total_bw values found in drgn output"
+        verbose_echo "  ERROR: No total_bw values found in drgn output"
         return 1
     fi
     
-    echo "  Successfully validated total_bw for $cpu_count CPUs"
+    verbose_echo "  Successfully validated total_bw for $cpu_count CPUs"
     
     return $validation_failed
 }
@@ -750,18 +806,18 @@ test_fair_server_bandwidth_validation() {
         excessive_runtime_ns=$((excessive_runtime_ns * FAIR_PERIOD_NS / (RT_PERIOD_US * 1000)))
     fi
     
-    echo "  Available non-RT bandwidth: ${available_rt_us}µs per ${RT_PERIOD_US}µs period"
-    echo "  Attempting to set excessive runtime: ${excessive_runtime_ns}ns (110% of available)"
+    verbose_echo "  Available non-RT bandwidth: ${available_rt_us}µs per ${RT_PERIOD_US}µs period"
+    verbose_echo "  Attempting to set excessive runtime: ${excessive_runtime_ns}ns (110% of available)"
     
     # Try to write the excessive runtime (this should fail)
     local write_failed=0
     if echo "$excessive_runtime_ns" > "$FAIR_SERVER_RUNTIME_FILE" 2>/dev/null; then
-        echo "    ERROR: Write succeeded when it should have failed"
+        verbose_echo "    ERROR: Write succeeded when it should have failed"
         write_failed=0
         # Try to restore original value
         echo "$FAIR_RUNTIME_NS" > "$FAIR_SERVER_RUNTIME_FILE" 2>/dev/null || true
     else
-        echo "    Write correctly rejected"
+        verbose_echo "    Write correctly rejected"
         write_failed=1
     fi
     
@@ -769,10 +825,10 @@ test_fair_server_bandwidth_validation() {
     local current_runtime_ns=$(cat "$FAIR_SERVER_RUNTIME_FILE" 2>/dev/null)
     local value_preserved=0
     if [ "$current_runtime_ns" = "$FAIR_RUNTIME_NS" ]; then
-        echo "    Original runtime value preserved: ${current_runtime_ns}ns"
+        verbose_echo "    Original runtime value preserved: ${current_runtime_ns}ns"
         value_preserved=1
     else
-        echo "    ERROR: Runtime value changed from ${FAIR_RUNTIME_NS}ns to ${current_runtime_ns}ns"
+        verbose_echo "    ERROR: Runtime value changed from ${FAIR_RUNTIME_NS}ns to ${current_runtime_ns}ns"
         value_preserved=0
     fi
     
@@ -813,20 +869,20 @@ test_fair_server_bandwidth_increase_after_rt_reduction() {
     
     # Calculate available bandwidth before modification
     local orig_available_us=$(calculate_available_bandwidth)
-    echo "  Original available non-RT bandwidth: ${orig_available_us}µs"
+    verbose_echo "  Original available non-RT bandwidth: ${orig_available_us}µs"
     
     # Reduce RT bandwidth by 10% to create more space for fair_server
     local new_rt_runtime_us=$((RT_RUNTIME_US * 90 / 100))
     local new_available_us=$((RT_PERIOD_US - new_rt_runtime_us))
     local additional_available_us=$((new_available_us - orig_available_us))
     
-    echo "  Reducing RT runtime to ${new_rt_runtime_us}µs (90% of original)"
-    echo "  New available non-RT bandwidth: ${new_available_us}µs (+${additional_available_us}µs)"
+    verbose_echo "  Reducing RT runtime to ${new_rt_runtime_us}µs (90% of original)"
+    verbose_echo "  New available non-RT bandwidth: ${new_available_us}µs (+${additional_available_us}µs)"
     
     # Set new RT bandwidth
     local rt_change_failed=0
     if ! echo "$new_rt_runtime_us" > /proc/sys/kernel/sched_rt_runtime_us 2>/dev/null; then
-        echo "    ERROR: Failed to reduce RT runtime"
+        verbose_echo "    ERROR: Failed to reduce RT runtime"
         rt_change_failed=1
     fi
     
@@ -850,15 +906,15 @@ test_fair_server_bandwidth_increase_after_rt_reduction() {
     
     local new_fair_runtime_ns=$((FAIR_RUNTIME_NS + additional_runtime_us * 1000))
     
-    echo "  Attempting to increase fair server runtime by ${additional_runtime_us}µs to ${new_fair_runtime_ns}ns"
+    verbose_echo "  Attempting to increase fair server runtime by ${additional_runtime_us}µs to ${new_fair_runtime_ns}ns"
     
     # Try to increase fair_server bandwidth (this should succeed)
     local fair_increase_failed=0
     if echo "$new_fair_runtime_ns" > "$FAIR_SERVER_RUNTIME_FILE" 2>/dev/null; then
-        echo "    Fair server bandwidth increase accepted"
+        verbose_echo "    Fair server bandwidth increase accepted"
         fair_increase_failed=0
     else
-        echo "    ERROR: Fair server bandwidth increase rejected"
+        verbose_echo "    ERROR: Fair server bandwidth increase rejected"
         fair_increase_failed=1
     fi
     
@@ -866,15 +922,15 @@ test_fair_server_bandwidth_increase_after_rt_reduction() {
     local current_fair_runtime_ns=$(cat "$FAIR_SERVER_RUNTIME_FILE" 2>/dev/null)
     local value_set_correctly=0
     if [ "$current_fair_runtime_ns" = "$new_fair_runtime_ns" ]; then
-        echo "    New fair server runtime correctly set: ${current_fair_runtime_ns}ns"
+        verbose_echo "    New fair server runtime correctly set: ${current_fair_runtime_ns}ns"
         value_set_correctly=1
     else
-        echo "    ERROR: Fair server runtime not set correctly (expected: ${new_fair_runtime_ns}ns, got: ${current_fair_runtime_ns}ns)"
+        verbose_echo "    ERROR: Fair server runtime not set correctly (expected: ${new_fair_runtime_ns}ns, got: ${current_fair_runtime_ns}ns)"
         value_set_correctly=0
     fi
     
     # Restore original settings
-    echo "  Restoring original settings..."
+    verbose_echo "  Restoring original settings..."
     echo "$FAIR_RUNTIME_NS" > "$FAIR_SERVER_RUNTIME_FILE" 2>/dev/null || true
     echo "$RT_RUNTIME_US" > /proc/sys/kernel/sched_rt_runtime_us 2>/dev/null || true
     
@@ -886,11 +942,11 @@ test_fair_server_bandwidth_increase_after_rt_reduction() {
     local restored_fair_runtime=$(cat "$FAIR_SERVER_RUNTIME_FILE" 2>/dev/null)
     
     if [ "$restored_rt_runtime" = "$RT_RUNTIME_US" ] && [ "$restored_fair_runtime" = "$FAIR_RUNTIME_NS" ]; then
-        echo "    Original settings successfully restored"
+        verbose_echo "    Original settings successfully restored"
     else
-        echo "    WARNING: Failed to fully restore original settings"
-        echo "      RT runtime: expected ${RT_RUNTIME_US}, got ${restored_rt_runtime}"
-        echo "      Fair runtime: expected ${FAIR_RUNTIME_NS}, got ${restored_fair_runtime}"
+        verbose_echo "    WARNING: Failed to fully restore original settings"
+        verbose_echo "      RT runtime: expected ${RT_RUNTIME_US}, got ${restored_rt_runtime}"
+        verbose_echo "      Fair runtime: expected ${FAIR_RUNTIME_NS}, got ${restored_fair_runtime}"
     fi
     
     # Test passes if:
@@ -931,8 +987,8 @@ test_dl_bandwidth_introspection() {
     # max_bw should reflect bandwidth available to RT and DEADLINE tasks (sched_rt_runtime_us/sched_rt_period_us)
     local expected_max_bw_kernel=$(runtime_period_to_kernel_bw $((RT_RUNTIME_US * 1000)) $((RT_PERIOD_US * 1000)))
     
-    echo "  Expected max_bw from RT settings: ${RT_RUNTIME_US}µs/${RT_PERIOD_US}µs -> $expected_max_bw_kernel (kernel format)"
-    echo "  Using drgn to introspect kernel deadline bandwidth information..."
+    verbose_echo "  Expected max_bw from RT settings: ${RT_RUNTIME_US}µs/${RT_PERIOD_US}µs -> $expected_max_bw_kernel (kernel format)"
+    verbose_echo "  Using drgn to introspect kernel deadline bandwidth information..."
     
     # Run dl_bw_dump.py via drgn and capture output
     local drgn_output=$(drgn "$DL_BW_TOOL" 2>&1)
@@ -954,17 +1010,17 @@ test_dl_bandwidth_introspection() {
         if [[ "$line" =~ "From CPU:" ]]; then
             cpu_count=$((cpu_count + 1))
             local cpu_id=$(echo "$line" | grep -o "CPU: [0-9]*" | cut -d' ' -f2)
-            echo "    Analyzing CPU $cpu_id bandwidth values:"
+            verbose_echo "    Analyzing CPU $cpu_id bandwidth values:"
         elif [[ "$line" =~ running_bw ]]; then
             local running_bw_raw=$(echo "$line" | awk '{print $NF}')
             # Extract numeric value from (u64)value format - remove type annotation first
             local running_bw=$(echo "$running_bw_raw" | sed 's/(u[0-9]*)//' | sed 's/[^0-9]//g')
             bandwidth_values_found=$((bandwidth_values_found + 1))
-            echo "      running_bw: $running_bw_raw -> $running_bw (kernel format)"
+            verbose_echo "      running_bw: $running_bw_raw -> $running_bw (kernel format)"
             
             # Validate that bandwidth value is reasonable (0 <= bw <= BW_UNIT)
             if [ -n "$running_bw" ] && ([ "$running_bw" -lt 0 ] || [ "$running_bw" -gt 1048576 ]); then
-                echo "      WARNING: running_bw value $running_bw is outside expected range [0, 1048576]"
+                verbose_echo "      WARNING: running_bw value $running_bw is outside expected range [0, 1048576]"
                 validation_failed=1
             fi
             
@@ -972,14 +1028,14 @@ test_dl_bandwidth_introspection() {
             local this_bw_raw=$(echo "$line" | awk '{print $NF}')
             local this_bw=$(echo "$this_bw_raw" | sed 's/(u[0-9]*)//' | sed 's/[^0-9]//g')
             bandwidth_values_found=$((bandwidth_values_found + 1))
-            echo "      this_bw: $this_bw_raw -> $this_bw (kernel format)"
+            verbose_echo "      this_bw: $this_bw_raw -> $this_bw (kernel format)"
             
         elif [[ "$line" =~ max_bw ]]; then
             local max_bw_raw=$(echo "$line" | awk '{print $NF}')
             local max_bw=$(echo "$max_bw_raw" | sed 's/(u[0-9]*)//' | sed 's/[^0-9]//g')
             bandwidth_values_found=$((bandwidth_values_found + 1))
             max_bw_comparisons=$((max_bw_comparisons + 1))
-            echo "      max_bw: $max_bw_raw -> $max_bw (kernel format)"
+            verbose_echo "      max_bw: $max_bw_raw -> $max_bw (kernel format)"
             
             # Compare with expected max_bw from RT settings
             if [ -n "$max_bw" ] && [ -n "$expected_max_bw_kernel" ]; then
@@ -992,9 +1048,9 @@ test_dl_bandwidth_introspection() {
                 fi
                 
                 if [ $diff -le $tolerance ]; then
-                    echo "        ✓ max_bw matches RT settings (diff: $diff, tolerance: $tolerance)"
+                    verbose_echo "        ✓ max_bw matches RT settings (diff: $diff, tolerance: $tolerance)"
                 else
-                    echo "        ✗ max_bw mismatch: got $max_bw, expected ~$expected_max_bw_kernel (diff: $diff > tolerance: $tolerance)"
+                    verbose_echo "        ✗ max_bw mismatch: got $max_bw, expected ~$expected_max_bw_kernel (diff: $diff > tolerance: $tolerance)"
                     validation_failed=1
                 fi
             fi
@@ -1003,19 +1059,19 @@ test_dl_bandwidth_introspection() {
             local total_bw_raw=$(echo "$line" | awk '{print $NF}')
             local total_bw=$(echo "$total_bw_raw" | sed 's/(u[0-9]*)//' | sed 's/[^0-9]//g')
             bandwidth_values_found=$((bandwidth_values_found + 1))
-            echo "      total_bw: $total_bw_raw -> $total_bw (kernel format)"
+            verbose_echo "      total_bw: $total_bw_raw -> $total_bw (kernel format)"
             
             # Check if there are any SCHED_DEADLINE tasks running and validate total_bw accordingly
             local deadline_tasks=$(ps -eo pid,policy,comm | awk '$2 == "DLN" {count++} END {print count+0}')
-            echo "        Found $deadline_tasks SCHED_DEADLINE tasks in system"
+            verbose_echo "        Found $deadline_tasks SCHED_DEADLINE tasks in system"
             
             if [ "$deadline_tasks" -eq 0 ]; then
                 # No deadline tasks running, total_bw should be 0
                 if [ -n "$total_bw" ] && [ "$total_bw" -ne 0 ]; then
-                    echo "        ✗ total_bw should be 0 when no SCHED_DEADLINE tasks are running, got: $total_bw"
+                    verbose_echo "        ✗ total_bw should be 0 when no SCHED_DEADLINE tasks are running, got: $total_bw"
                     validation_failed=1
                 else
-                    echo "        ✓ total_bw is 0 as expected (no SCHED_DEADLINE tasks running)"
+                    verbose_echo "        ✓ total_bw is 0 as expected (no SCHED_DEADLINE tasks running)"
                 fi
             else
                 # Deadline tasks are running, calculate expected total bandwidth and compare
@@ -1023,17 +1079,17 @@ test_dl_bandwidth_introspection() {
                 local calculated_total_bw=$(calculate_deadline_tasks_total_bandwidth)
                 
                 if [ -n "$total_bw" ] && [ "$total_bw" -gt 0 ]; then
-                    echo "        ✓ total_bw is $total_bw with $deadline_tasks SCHED_DEADLINE tasks running"
+                    verbose_echo "        ✓ total_bw is $total_bw with $deadline_tasks SCHED_DEADLINE tasks running"
                     
                     # Compare calculated vs kernel total_bw
                     if [ "$calculated_total_bw" -eq "$total_bw" ]; then
-                        echo "        ✓ Calculated total bandwidth ($calculated_total_bw) matches kernel total_bw ($total_bw)"
+                        verbose_echo "        ✓ Calculated total bandwidth ($calculated_total_bw) matches kernel total_bw ($total_bw)"
                     else
-                        echo "        ✗ Bandwidth mismatch: calculated $calculated_total_bw vs kernel total_bw $total_bw"
+                        verbose_echo "        ✗ Bandwidth mismatch: calculated $calculated_total_bw vs kernel total_bw $total_bw"
                         validation_failed=1
                     fi
                 else
-                    echo "        ✗ total_bw is $total_bw but $deadline_tasks SCHED_DEADLINE tasks are running (expected > 0)"
+                    verbose_echo "        ✗ total_bw is $total_bw but $deadline_tasks SCHED_DEADLINE tasks are running (expected > 0)"
                     validation_failed=1
                 fi
             fi
@@ -1051,21 +1107,21 @@ test_dl_bandwidth_introspection() {
         return 1
     fi
     
-    echo "  Successfully retrieved bandwidth information for $cpu_count CPUs"
-    echo "  Found $bandwidth_values_found bandwidth values in kernel format"
-    echo "  Performed $max_bw_comparisons max_bw comparisons with RT bandwidth settings"
+    verbose_echo "  Successfully retrieved bandwidth information for $cpu_count CPUs"
+    verbose_echo "  Found $bandwidth_values_found bandwidth values in kernel format"
+    verbose_echo "  Performed $max_bw_comparisons max_bw comparisons with RT bandwidth settings"
     
     # Test bandwidth conversion functions with realistic values
-    echo "  Testing bandwidth conversion functions:"
+    verbose_echo "  Testing bandwidth conversion functions:"
     
     # Test: 50% bandwidth (0.5 ratio)
     local test_ratio_50=$(decimal_to_kernel_bw 50)  # 50% as percentage
     local expected_50=$((1048576 * 50 / 100))       # 524288
     
     if [ "$test_ratio_50" -eq "$expected_50" ]; then
-        echo "    ✓ 50% ratio conversion: $test_ratio_50 (expected: $expected_50)"
+        verbose_echo "    ✓ 50% ratio conversion: $test_ratio_50 (expected: $expected_50)"
     else
-        echo "    ✗ 50% ratio conversion failed: got $test_ratio_50, expected $expected_50"
+        verbose_echo "    ✗ 50% ratio conversion failed: got $test_ratio_50, expected $expected_50"
         validation_failed=1
     fi
     
@@ -1075,9 +1131,9 @@ test_dl_bandwidth_introspection() {
     local test_rt_period=$(runtime_period_to_kernel_bw $runtime_50ms $period_100ms)
     
     if [ "$test_rt_period" -eq "$expected_50" ]; then
-        echo "    ✓ Runtime/period conversion: $test_rt_period (expected: $expected_50)"
+        verbose_echo "    ✓ Runtime/period conversion: $test_rt_period (expected: $expected_50)"
     else
-        echo "    ✗ Runtime/period conversion failed: got $test_rt_period, expected $expected_50"
+        verbose_echo "    ✗ Runtime/period conversion failed: got $test_rt_period, expected $expected_50"
         validation_failed=1
     fi
     
@@ -1114,10 +1170,10 @@ test_dl_bandwidth_tracking_with_multiple_tasks() {
     # Calculate available bandwidth for deadline tasks (same pool as RT tasks)
     # DEADLINE tasks share sched_rt_runtime_us/sched_rt_period_us bandwidth with RT tasks
     local available_bw_kernel=$(runtime_period_to_kernel_bw $((RT_RUNTIME_US * 1000)) $((RT_PERIOD_US * 1000)))
-    echo "  Available bandwidth for DEADLINE tasks: ${RT_RUNTIME_US}µs/${RT_PERIOD_US}µs -> $available_bw_kernel (kernel format)"
+    verbose_echo "  Available bandwidth for DEADLINE tasks: ${RT_RUNTIME_US}µs/${RT_PERIOD_US}µs -> $available_bw_kernel (kernel format)"
     
     # Start with baseline: no DEADLINE tasks should mean total_bw = 0
-    echo "  Step 1: Validate baseline (no DEADLINE tasks)"
+    verbose_echo "  Step 1: Validate baseline (no DEADLINE tasks)"
     if ! validate_total_bw_with_drgn; then
         print_test_result "$test_name" "FAIL" "Baseline validation failed"
         return 1
@@ -1129,7 +1185,7 @@ test_dl_bandwidth_tracking_with_multiple_tasks() {
     local expected_total_bw=0
     local task_params=()
     
-    echo "  Step 2: Starting $num_tasks SCHED_DEADLINE cpuhog tasks with random parameters"
+    verbose_echo "  Step 2: Starting $num_tasks SCHED_DEADLINE cpuhog tasks with random parameters"
     
     for i in $(seq 1 $num_tasks); do
         # Generate random but sensible parameters
@@ -1159,21 +1215,21 @@ test_dl_bandwidth_tracking_with_multiple_tasks() {
                     runtime_ns=$new_runtime_ns
 		    # Recalculate bandwidth based on actual runtime to avoid approximation issues
                     task_kernel_bw=$(runtime_period_to_kernel_bw "$runtime_ns" "$period_ns")
-                    echo "    Reduced task $i runtime to ${runtime_ns}ns to fit available bandwidth"
+                    verbose_echo "    Reduced task $i runtime to ${runtime_ns}ns to fit available bandwidth"
                 else
-                    echo "    Skipping task $i: insufficient remaining bandwidth"
+                    verbose_echo "    Skipping task $i: insufficient remaining bandwidth"
                     continue
                 fi
             else
-                echo "    Skipping task $i: insufficient remaining bandwidth"
+                verbose_echo "    Skipping task $i: insufficient remaining bandwidth"
                 continue
             fi
         fi
         
         expected_total_bw=$((expected_total_bw + task_kernel_bw))
         
-        echo "    Starting task $i: runtime=${runtime_ns}ns, deadline=${deadline_ns}ns, period=${period_ns}ns"
-        echo "      -> Bandwidth: $task_kernel_bw (kernel format)"
+        verbose_echo "    Starting task $i: runtime=${runtime_ns}ns, deadline=${deadline_ns}ns, period=${period_ns}ns"
+        verbose_echo "      -> Bandwidth: $task_kernel_bw (kernel format)"
         
         # Start the DEADLINE task
         chrt -d -T "$runtime_ns" -D "$deadline_ns" -P "$period_ns" 0 $CPUHOG_PROG &
@@ -1182,9 +1238,9 @@ test_dl_bandwidth_tracking_with_multiple_tasks() {
         if [ $? -eq 0 ]; then
             task_pids+=("$task_pid")
             task_params+=("$runtime_ns $deadline_ns $period_ns $task_kernel_bw")
-            echo "      -> Started with PID: $task_pid"
+            verbose_echo "      -> Started with PID: $task_pid"
         else
-            echo "      -> ERROR: Failed to start task $i"
+            verbose_echo "      -> ERROR: Failed to start task $i"
             expected_total_bw=$((expected_total_bw - task_kernel_bw))
         fi
         
@@ -1193,8 +1249,8 @@ test_dl_bandwidth_tracking_with_multiple_tasks() {
     done
     
     local actual_tasks=${#task_pids[@]}
-    echo "  Successfully started $actual_tasks SCHED_DEADLINE tasks"
-    echo "  Expected total bandwidth: $expected_total_bw (kernel format)"
+    verbose_echo "  Successfully started $actual_tasks SCHED_DEADLINE tasks"
+    verbose_echo "  Expected total bandwidth: $expected_total_bw (kernel format)"
     
     if [ $actual_tasks -eq 0 ]; then
         print_test_result "$test_name" "SKIP" "No DEADLINE tasks could be started"
@@ -1202,31 +1258,31 @@ test_dl_bandwidth_tracking_with_multiple_tasks() {
     fi
     
     # Allow tasks to settle and be accounted in bandwidth tracking
-    echo "  Step 3: Allowing tasks to settle (2 seconds)..."
+    verbose_echo "  Step 3: Allowing tasks to settle (2 seconds)..."
     sleep 2
     
     # Validate total_bw tracking with running tasks
-    echo "  Step 4: Validating total_bw tracking with $actual_tasks running tasks"
+    verbose_echo "  Step 4: Validating total_bw tracking with $actual_tasks running tasks"
     local validation_result=0
     if ! validate_total_bw_with_drgn "$expected_total_bw"; then
         validation_result=1
     fi
     
     # Clean up tasks
-    echo "  Step 5: Cleaning up DEADLINE tasks"
+    verbose_echo "  Step 5: Cleaning up DEADLINE tasks"
     for pid in "${task_pids[@]}"; do
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null || true
-            echo "    Terminated task PID: $pid"
+            verbose_echo "    Terminated task PID: $pid"
         fi
     done
     
     # Wait for tasks to fully terminate and bandwidth to be released
-    echo "  Step 6: Waiting for bandwidth release (2 seconds)..."
+    verbose_echo "  Step 6: Waiting for bandwidth release (2 seconds)..."
     sleep 2
     
     # Validate that total_bw returns to 0 after cleanup
-    echo "  Step 7: Validating total_bw cleanup (should return to 0)"
+    verbose_echo "  Step 7: Validating total_bw cleanup (should return to 0)"
     if ! validate_total_bw_with_drgn; then
         validation_result=1
     fi
@@ -1237,9 +1293,9 @@ test_dl_bandwidth_tracking_with_multiple_tasks() {
     # 3. total_bw returned to 0 after task cleanup
     if [ $validation_result -eq 0 ]; then
         print_test_result "$test_name" "PASS"
-        echo "  ✓ total_bw tracking validated through complete lifecycle"
-        echo "  ✓ Started $actual_tasks tasks with total bandwidth: $expected_total_bw"
-        echo "  ✓ Bandwidth properly released after task termination"
+        verbose_echo "  ✓ total_bw tracking validated through complete lifecycle"
+        verbose_echo "  ✓ Started $actual_tasks tasks with total bandwidth: $expected_total_bw"
+        verbose_echo "  ✓ Bandwidth properly released after task termination"
     else
         print_test_result "$test_name" "FAIL" "total_bw tracking validation failed"
         return 1
