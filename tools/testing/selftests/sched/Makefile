@@ -9,6 +9,7 @@ CFLAGS += -O2 -Wall -g -I./ $(KHDR_INCLUDES) -Wl,-rpath=./ \
 LDLIBS += -lpthread
 
 TEST_GEN_FILES := cs_prctl_test cpuhog
-TEST_PROGS := cs_prctl_test sched_deadline_test.sh
+TEST_PROGS := cs_prctl_test sched_deadline_test_modular.sh
+TEST_FILES := common_utils.sh test_basic.sh test_bandwidth.sh test_fair_server.sh test_introspection.sh
 
 include ../lib.mk
