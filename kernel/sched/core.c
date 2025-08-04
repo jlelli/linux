@@ -1347,8 +1347,14 @@ bool sched_can_stop_tick(struct rq *rq)
 	 * forced preemption between FIFO tasks.
 	 */
 	fifo_nr_running = rq->rt.rt_nr_running - rq->rt.rr_nr_running;
-	if (fifo_nr_running)
+	if (fifo_nr_running) {
+		if (rq->cfs.h_nr_queued) {
+			dl_server_start(&rq->fair_server);
+			return false;
+		}
+
 		return true;
+	}
 
 	/*
 	 * If there are no DL,RR/FIFO tasks, there must only be CFS or SCX tasks
@@ -1372,6 +1378,8 @@ bool sched_can_stop_tick(struct rq *rq)
 		if (cfs_task_bw_constrained(rq->curr))
 			return false;
 	}
+
+	dl_server_stop(&rq->fair_server);
 
 	return true;
 }
