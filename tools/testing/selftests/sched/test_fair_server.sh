@@ -5,6 +5,7 @@
 # Contains:
 # - test_fair_server_bandwidth_validation: Test fair server bandwidth validation against global RT bandwidth
 # - test_fair_server_bandwidth_increase_after_rt_reduction: Test fair server bandwidth increase after reducing global RT bandwidth
+# - test_fair_server_cpu_protection: Test that fair server provides ~5% CPU to CFS tasks under FIFO competition
 
 test_fair_server_bandwidth_validation() {
     local test_name="Fair server bandwidth validation against global RT bandwidth"
@@ -201,4 +202,179 @@ test_fair_server_bandwidth_increase_after_rt_reduction() {
     fi
     
     return 0
+}
+
+# Function to get CPU time for a process in clock ticks
+get_process_cpu_time() {
+    local pid=$1
+    if [ ! -f "/proc/$pid/stat" ]; then
+        echo "0"
+        return
+    fi
+    
+    # Extract utime (field 14) and stime (field 15) from /proc/PID/stat
+    local stat_data=$(cat /proc/$pid/stat 2>/dev/null)
+    if [ -z "$stat_data" ]; then
+        echo "0"
+        return
+    fi
+    
+    local utime=$(echo $stat_data | awk '{print $14}')
+    local stime=$(echo $stat_data | awk '{print $15}')
+    echo $((utime + stime))
+}
+
+# Helper function to read fair server settings for a specific CPU
+read_fair_server_settings_for_cpu() {
+    local cpu_num="$1"
+    local test_name="$2"
+    
+    # Check if fair_server debugfs interface exists
+    local fair_server_dir="/sys/kernel/debug/sched/fair_server"
+    if [ ! -d "$fair_server_dir" ]; then
+        print_test_result "$test_name" "SKIP" "Fair server debugfs interface not found"
+        return 1
+    fi
+    
+    # Check if the specific CPU directory exists
+    local cpu_dir="$fair_server_dir/cpu$cpu_num"
+    if [ ! -d "$cpu_dir" ]; then
+        print_test_result "$test_name" "SKIP" "Fair server interface for CPU $cpu_num not found"
+        return 1
+    fi
+    
+    # Check required files exist
+    local runtime_file="$cpu_dir/runtime"
+    local period_file="$cpu_dir/period"
+    
+    if [ ! -f "$runtime_file" ] || [ ! -f "$period_file" ]; then
+        print_test_result "$test_name" "SKIP" "Fair server runtime/period files not found for CPU $cpu_num"
+        return 1
+    fi
+    
+    # Read the settings
+    local runtime_ns=$(cat "$runtime_file" 2>/dev/null)
+    local period_ns=$(cat "$period_file" 2>/dev/null)
+    
+    if [ -z "$runtime_ns" ] || [ -z "$period_ns" ]; then
+        print_test_result "$test_name" "FAIL" "Could not read fair server settings for CPU $cpu_num"
+        return 1
+    fi
+    
+    # Calculate expected percentage
+    local expected_percentage=$((runtime_ns * 100 / period_ns))
+    
+    verbose_echo "  CPU $cpu_num fair server: runtime=${runtime_ns}ns, period=${period_ns}ns"
+    verbose_echo "  Expected CPU percentage: ${expected_percentage}%"
+    
+    # Export values for use by caller
+    export FAIR_SERVER_RUNTIME_NS="$runtime_ns"
+    export FAIR_SERVER_PERIOD_NS="$period_ns"
+    export FAIR_SERVER_EXPECTED_PERCENT="$expected_percentage"
+    
+    return 0
+}
+
+# Test that fair server provides CPU protection to CFS tasks under FIFO competition
+test_fair_server_cpu_protection() {
+    local test_name="Fair server provides CPU protection to CFS tasks under FIFO competition"
+    echo "Running test: $test_name"
+    
+    # Check required tools
+    if ! command -v taskset >/dev/null 2>&1; then
+        print_test_result "$test_name" "SKIP" "taskset not available"
+        return 0
+    fi
+    
+    # Build cpuhog if it doesn't exist
+    local cpuhog_binary="$SCRIPT_DIR/cpuhog"
+    if [ ! -x "$cpuhog_binary" ]; then
+        verbose_echo "  Building cpuhog..."
+        if ! make -C "$SCRIPT_DIR" cpuhog >/dev/null 2>&1; then
+            print_test_result "$test_name" "SKIP" "Could not build cpuhog binary"
+            return 0
+        fi
+    fi
+    
+    if [ ! -x "$cpuhog_binary" ]; then
+        print_test_result "$test_name" "SKIP" "cpuhog binary not available"
+        return 0
+    fi
+    
+    # Read fair server settings for CPU 2
+    local test_cpu=2
+    if ! read_fair_server_settings_for_cpu $test_cpu "$test_name"; then
+        return 0  # Skip or fail already handled by the function
+    fi
+    
+    local ticks_per_sec=$(getconf CLK_TCK)
+    local test_duration=12  # seconds
+    
+    verbose_echo "  Starting CFS cpuhog task on CPU $test_cpu..."
+    
+    # Start a CFS (normal priority) CPU-bound task using cpuhog
+    taskset -c $test_cpu "$cpuhog_binary" -t $((test_duration + 5)) >/dev/null 2>&1 &
+    local cfs_pid=$!
+    
+    # Let CFS task stabilize
+    sleep 2
+    
+    verbose_echo "  Measuring baseline CPU time..."
+    local initial_cpu_time=$(get_process_cpu_time $cfs_pid)
+    local measurement_start=$(date +%s)
+    
+    verbose_echo "  Starting FIFO cpuhog task on CPU $test_cpu..."
+    
+    # Start high-priority FIFO task on same CPU to create competition
+    taskset -c $test_cpu chrt -f 50 "$cpuhog_binary" -t $((test_duration + 5)) >/dev/null 2>&1 &
+    local fifo_pid=$!
+    
+    # Wait for the measurement period
+    sleep $test_duration
+    
+    verbose_echo "  Measuring final CPU time..."
+    local final_cpu_time=$(get_process_cpu_time $cfs_pid)
+    local measurement_end=$(date +%s)
+    
+    # Clean up processes
+    kill $cfs_pid $fifo_pid 2>/dev/null
+    wait $cfs_pid $fifo_pid 2>/dev/null
+    
+    # Calculate CPU usage
+    local actual_duration=$((measurement_end - measurement_start))
+    local cpu_ticks_used=$((final_cpu_time - initial_cpu_time))
+    local total_possible_ticks=$((actual_duration * ticks_per_sec))
+    
+    local cpu_percentage=0
+    if [ $total_possible_ticks -gt 0 ]; then
+        cpu_percentage=$((cpu_ticks_used * 100 / total_possible_ticks))
+    fi
+    
+    verbose_echo "  Test duration: ${actual_duration}s"
+    verbose_echo "  CPU ticks consumed by CFS task: $cpu_ticks_used"
+    verbose_echo "  Total possible CPU ticks: $total_possible_ticks"
+    verbose_echo "  CFS task CPU usage: ${cpu_percentage}%"
+    
+    # Use actual fair server settings to determine expected range
+    # Allow reasonable tolerance: ±50% of expected (accounting for measurement granularity and overhead)
+    local min_expected=$((FAIR_SERVER_EXPECTED_PERCENT * 50 / 100))
+    local max_expected=$((FAIR_SERVER_EXPECTED_PERCENT * 150 / 100))
+    
+    # But ensure minimum reasonable bounds (at least 1% to detect if fair server is working)
+    if [ $min_expected -lt 1 ]; then
+        min_expected=1
+    fi
+    
+    verbose_echo "  Expected range: ${min_expected}%-${max_expected}% (based on ${FAIR_SERVER_EXPECTED_PERCENT}% fair server setting)"
+    
+    if [ $cpu_percentage -ge $min_expected ] && [ $cpu_percentage -le $max_expected ]; then
+        print_test_result "$test_name" "PASS" "CFS task received ${cpu_percentage}% CPU (expected ~${FAIR_SERVER_EXPECTED_PERCENT}%)"
+        return 0
+    elif [ $cpu_percentage -lt $min_expected ]; then
+        print_test_result "$test_name" "FAIL" "CFS task received only ${cpu_percentage}% CPU (expected ~${FAIR_SERVER_EXPECTED_PERCENT}%)"
+        return 1
+    else
+        print_test_result "$test_name" "FAIL" "CFS task received ${cpu_percentage}% CPU (too high, expected ~${FAIR_SERVER_EXPECTED_PERCENT}%)"
+        return 1
+    fi
 }

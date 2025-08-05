@@ -11,8 +11,9 @@
 # 4. Bandwidth admission control works correctly
 # 5. Fair_server bandwidth validation respects global RT bandwidth limits
 # 6. Fair_server bandwidth increases work when global RT bandwidth is reduced
-# 7. Deadline bandwidth introspection via drgn and kernel memory access
-# 8. SCHED_DEADLINE total_bw tracking with multiple running tasks
+# 7. Fair_server provides CPU protection to CFS tasks under FIFO competition
+# 8. Deadline bandwidth introspection via drgn and kernel memory access
+# 9. SCHED_DEADLINE total_bw tracking with multiple running tasks
 #
 # MODULAR VERSION - Functionality identical to monolithic script
 
@@ -77,6 +78,9 @@ main() {
     echo
     
     test_fair_server_bandwidth_increase_after_rt_reduction
+    echo
+    
+    test_fair_server_cpu_protection
     echo
     
     test_dl_bandwidth_introspection
