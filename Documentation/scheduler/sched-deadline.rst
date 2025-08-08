@@ -9,6 +9,7 @@ Deadline Task Scheduling
     2. Scheduling algorithm
       2.1 Main algorithm
       2.2 Bandwidth reclaiming
+      2.3 Energy-aware scheduling
     3. Scheduling Real-Time Tasks
       3.1 Definitions
       3.2 Schedulability Analysis for Uniprocessor Systems
@@ -19,10 +20,20 @@ Deadline Task Scheduling
       4.2 Task interface
       4.3 Default behavior
       4.4 Behavior of sched_yield()
-    5. Tasks CPU affinity
-      5.1 Using cgroup v1 cpuset controller
-      5.2 Using cgroup v2 cpuset controller
-    6. Future plans
+    5. DL-Server: Nested Scheduling
+      5.1 Overview
+      5.2 Server Interface
+      5.3 Fair Server Implementation
+      5.4 Server Lifecycle
+      5.5 Bandwidth Enforcement
+      5.6 Timer Management
+      5.7 Configuration and Monitoring
+      5.8 Integration with Scheduler Classes
+      5.9 Implementation Details
+    6. Tasks CPU affinity
+      6.1 Using cgroup v1 cpuset controller
+      6.2 Using cgroup v2 cpuset controller
+    7. Future plans
     A. Test suite
     B. Minimal main()
 
@@ -668,8 +679,208 @@ Deadline Task Scheduling
  make the leftoever runtime available for reclamation by other
  SCHED_DEADLINE tasks.
 
+5. DL-Server: Nested Scheduling
+===============================
 
-5. Tasks CPU affinity
+ The SCHED_DEADLINE scheduler supports a nested scheduling mechanism called
+ DL-Server, which allows deadline entities to act as servers that can schedule
+ other tasks. This enables hierarchical scheduling where deadline servers can
+ provide bandwidth isolation and temporal guarantees to their client tasks.
+
+5.1 Overview
+------------
+
+ DL-Server implements a nested scheduling architecture where deadline entities
+ can act as servers that schedule other tasks. The primary use case is the
+ Fair Server, which provides deadline-based bandwidth guarantees to CFS tasks.
+
+ A DL-Server is characterized by:
+
+  - A deadline entity (sched_dl_entity) with the dl_server flag set
+  - Callback functions to determine if the server has tasks to run
+  - Callback functions to pick the next task to run
+  - Bandwidth enforcement through CBS (Constant Bandwidth Server)
+
+5.2 Server Interface
+-------------------
+
+ The DL-Server interface consists of several key components:
+
+  - dl_se::rq -- The runqueue the server belongs to
+  - dl_se::server_has_tasks() -- Determines if the server has tasks to run
+  - dl_se::server_pick_task() -- Picks the next task to run from the server
+  - dl_server_update() -- Propagates runtime consumption to the server
+  - dl_server_start() / dl_server_stop() -- Controls server activation
+  - dl_server_init() -- Initializes the server
+
+5.3 Fair Server Implementation
+-----------------------------
+
+ The Fair Server is the primary implementation of DL-Server, providing
+ deadline-based bandwidth guarantees to CFS tasks. It is implemented as
+ a deadline entity within each runqueue (rq->fair_server).
+
+ Key characteristics of the Fair Server:
+
+  - Default configuration: 50ms runtime, 1000ms period (5% bandwidth)
+  - Deferred activation mode (dl_defer = 1)
+  - Automatically starts when CFS tasks are enqueued
+  - Automatically stops only after being idle for a whole period (1 second by default)
+  - Provides bandwidth isolation for CFS tasks
+
+ The Fair Server operates in two modes:
+
+  **Regular Mode (dl_defer = 0):**
+   - Server provides immediate bandwidth guarantees
+   - No idle time accounting
+
+  **Deferred Mode (dl_defer = 1):**
+   - Server activation is deferred until needed
+   - Idle time is considered available for CFS tasks
+   - Avoids penalties for RT scheduler when CFS tasks don't consume time
+
+5.4 Server Lifecycle
+-------------------
+
+ The server lifecycle follows these phases:
+
+  1. **Initialization**: Server is created with dl_server_init()
+  2. **Inactive**: Server exists but is not active (dl_server_active = 0)
+  3. **Active**: Server is running and scheduling tasks (dl_server_active = 1)
+  4. **Idle**: Server has no tasks but remains active temporarily (dl_server_idle = 1)
+  5. **Stopped**: Server is deactivated and returns to inactive state
+
+ Server activation is controlled by:
+
+  - dl_server_start(): Activates the server when it has tasks
+  - dl_server_stop(): Deactivates the server when it has been idle for a whole period
+  - dl_server_stopped(): Determines if server should be stopped based on idle state
+
+ **Deferred Server States:**
+
+ For deferred servers (dl_defer = 1), additional state flags control the
+ activation timing:
+
+  - **dl_defer**: Indicates this is a deferred server that delays activation
+    until needed, avoiding penalties when CFS tasks don't consume time
+
+  - **dl_defer_armed**: Set when the server is waiting for the replenishment
+    timer to activate it. This occurs when a deferred server has tasks but
+    is not yet running, and the timer is set to activate the server at the
+    appropriate time
+
+  - **dl_defer_running**: Indicates the deferred server has transitioned from
+    the deferred phase to actually running. This happens when the timer fires
+    and the server begins normal operation, skipping the defer phase
+
+  - **dl_server_idle**: Indicates the server has no tasks but remains active
+    temporarily. The server is only stopped after being idle for a whole period
+    to avoid frequent start/stop overhead during rapid task transitions
+
+ The deferred activation mechanism works as follows:
+
+  1. When a deferred server has tasks but is not running, dl_defer_armed is set
+  2. The replenishment timer is started to activate the server at the 0-lag time
+  3. When the timer fires, dl_defer_running is set and normal server operation begins
+  4. The server can consume runtime in the background while deferred
+  5. If the server has no tasks, dl_server_idle is set and it remains active
+  6. Only after being idle for a whole period is the server stopped
+
+5.5 Bandwidth Enforcement
+------------------------
+
+ DL-Servers use the same CBS (Constant Bandwidth Server) mechanism as regular
+ deadline tasks for bandwidth enforcement, however they have additional features.
+
+ **Differences from normal deadline entities:**
+
+  - **Deferred activation**: Unlike normal deadline entities that activate immediately
+    when created, DL-Servers can delay activation until needed (when dl_defer = 1)
+  - **Idle time accounting**: While normal deadline entities don't consume runtime even when
+    idle, DL-Servers can account for idle time and allow lower-priority tasks to use
+    CPU time without penalty
+  - **Background runtime consumption**: Normal deadline entities are completely
+    throttled when runtime is exhausted, but DL-Servers can continue consuming
+    runtime in the background while throttled, enabling deferred activation
+  - **Server lifecycle management**: Normal deadline entities have simple start/stop
+    behavior, while DL-Servers have complex lifecycle states including idle periods
+    and deferred activation phases
+
+5.6 Timer Management
+-------------------
+
+ DL-Servers use the same timer mechanisms as normal deadline entities:
+
+  **Replenishment Timer (dl_task_timer):**
+   - Handles runtime replenishment at period boundaries
+   - For servers, branches to dl_server_timer() callback when dl_server(dl_se) is true
+   - For normal deadline tasks, handles standard replenishment logic
+
+  **Inactive Timer (inactive_timer):**
+   - Manages bandwidth reclamation for blocked tasks
+   - Implements the 0-lag time mechanism
+
+ The server timer callback (dl_server_timer) is a branch within the main dl_task_timer
+ that handles server-specific logic:
+
+  - Runtime replenishment
+  - Server activation/deactivation
+  - Deferred activation logic
+  - Background runtime consumption
+
+5.7 Configuration and Monitoring
+------------------------------
+
+ The Fair Server can be configured through debugfs:
+
+  - /sys/kernel/debug/sched/fair_server/cpuX/runtime
+  - /sys/kernel/debug/sched/fair_server/cpuX/period
+
+ These interfaces allow runtime adjustment of server parameters:
+
+  - Runtime: Amount of time available per period
+  - Period: Length of the server's period
+  - Bandwidth: Calculated as runtime/period
+
+5.8 Integration with Scheduler Classes
+------------------------------------
+
+ DL-Servers integrate with the scheduler class hierarchy:
+
+  - Servers are scheduled by the deadline scheduler class
+  - When a server is selected, it picks tasks from its client scheduler
+  - The picked task inherits the server's deadline for scheduling purposes
+  - Server bandwidth is accounted in the deadline bandwidth management
+
+ This creates a hierarchical scheduling structure where:
+
+  - Deadline tasks have highest priority
+  - DL-Servers provide bandwidth guarantees to lower-priority tasks
+  - CFS tasks run within the Fair Server's bandwidth allocation
+
+
+
+5.9 Implementation Details
+-------------------------
+
+ The DL-Server implementation is primarily located in:
+
+  - kernel/sched/deadline.c: Core server functionality
+  - kernel/sched/fair.c: Fair Server implementation
+  - kernel/sched/sched.h: Server interface definitions
+
+ Key data structures:
+
+  - struct sched_dl_entity: Base deadline entity with server flags
+  - struct rq: Contains fair_server field
+  - Server callbacks: has_tasks and pick_task functions
+
+ The server mechanism extends the existing deadline scheduler without
+ requiring changes to the core scheduling algorithms, providing a
+ clean and efficient implementation of nested scheduling.
+
+
+6. Tasks CPU affinity
 =====================
 
  Deadline tasks cannot have a cpu affinity mask smaller than the root domain they
@@ -679,7 +890,7 @@ Deadline Task Scheduling
  See :ref:`Documentation/admin-guide/cgroup-v1/cpusets.rst <cpusets>` and
  :ref:`Documentation/admin-guide/cgroup-v2.rst <cgroup-v2>` for more information.
 
-5.1 Using cgroup v1 cpuset controller
+6.1 Using cgroup v1 cpuset controller
 -------------------------------------
 
  An example of a simple configuration (pin a -deadline task to CPU0) follows::
@@ -697,7 +908,7 @@ Deadline Task Scheduling
    echo $$ > cpu0/tasks
    chrt --sched-runtime 100000 --sched-period 200000 --deadline 0 yes > /dev/null
 
-5.2 Using cgroup v2 cpuset controller
+6.2 Using cgroup v2 cpuset controller
 -------------------------------------
 
  Assuming the cgroup v2 root is mounted at ``/sys/fs/cgroup``.
@@ -710,7 +921,7 @@ Deadline Task Scheduling
    echo $$ > deadline_group/cgroup.procs
    chrt --sched-runtime 100000 --sched-period 200000 --deadline 0 yes > /dev/null
 
-6. Future plans
+7. Future plans
 ===============
 
  Still missing:
