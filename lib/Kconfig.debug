@@ -1343,6 +1343,37 @@ config SCHED_RT_INVARIANT_TEST
 	  to be built into the kernel.
 	  Say N if you are unsure.
 
+	  The test implements the scenario from Documentation/scheduler/m-bwi.txt
+	  with tasks having different periods and critical section patterns,
+	  including nested critical sections.
+
+	  Say Y here if you want M-BWI scheduling tests to be built into
+	  the kernel.
+	  Say N if you are unsure.
+
+config SCHED_MBWI_FRAMEWORK_TEST
+	tristate "M-BWI general test framework"
+	depends on DEBUG_KERNEL
+	help
+	  This option provides a general test framework for M-BWI scenarios
+	  with SCHED_DEADLINE tasks. It allows defining custom tasksets and
+	  execution patterns using a simple grammar with macros.
+
+	  The framework supports:
+	  - Flexible task parameter specification
+	  - Complex execution phase patterns (work, lock, unlock, nested CS)
+	  - Comprehensive statistics collection
+	  - Temporal isolation validation
+	  - Resource contention analysis
+
+	  Say Y here if you want the general M-BWI test framework built
+	  into the kernel, or M to build it as a loadable module.
+	  
+	  Building as a module allows faster development iteration when
+	  adding or modifying tasksets without rebuilding the kernel.
+	  
+	  Say N if you are unsure.
+
 config SCHED_INFO
 	bool
 	default n

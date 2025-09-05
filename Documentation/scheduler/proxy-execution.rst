@@ -271,7 +271,11 @@ Proxy execution can be controlled at boot time:
 Testing Framework
 -----------------
 
-The ``ksched_football`` test validates proxy execution behavior:
+Two test modules validate proxy execution behavior:
+
+**ksched_football Test**
+
+The ``ksched_football`` test validates basic proxy execution with RT tasks:
 
 - **High Priority Defense**: Tasks that block on mutexes
 - **Low Priority Holders**: Tasks that hold the mutexes
@@ -280,6 +284,66 @@ The ``ksched_football`` test validates proxy execution behavior:
 With proxy execution enabled, the low priority holders should be boosted,
 preventing medium priority tasks from running and maintaining the RT
 scheduling invariant.
+
+**M-BWI Framework Test**
+
+- **Task A**: (3ms/10ms/10ms) - Accesses R1 for 2ms
+- **Task B**: (4ms/12ms/12ms) - Accesses R1 for 1ms
+- **Task C**: (5ms/15ms/15ms) - Nested: R1 for 3ms, then R2 for 2ms
+- **Task D**: (2ms/8ms/8ms) - No shared resources (temporal isolation test)
+
+**M-BWI Framework Test**
+
+The ``test_mbwi_framework`` module provides a general framework for defining
+custom M-BWI test scenarios using a simple grammar:
+
+.. code-block:: c
+
+    /* Define resources */
+    static struct mbwi_resource my_resources[] = {
+        DEFINE_RESOURCE(0, "SharedDB"),
+        DEFINE_RESOURCE(1, "NetworkIO"),
+    };
+    
+    /* Define tasks with execution phases */
+    static struct mbwi_task_def my_taskset[] = {
+        DEFINE_TASK("HighPrio", 5, 20, 20, 0)  // 5ms/20ms/20ms, CPU 0
+            WORK(2),                           // 2ms computation
+            LOCK(0),                          // Lock SharedDB
+            WORK_CS(3),                       // 3ms critical section
+            UNLOCK(0),                        // Unlock SharedDB
+        END_TASK(),
+        
+        DEFINE_TASK("LowPrio", 8, 50, 50, -1)  // 8ms/50ms/50ms, any CPU
+            LOCK(0),                          // Lock SharedDB
+            WORK_CS(5),                       // 5ms critical section
+            LOCK(1),                          // Lock NetworkIO (nested)
+            WORK_CS(2),                       // 2ms nested critical section
+            UNLOCK(1),                        // Unlock NetworkIO
+            UNLOCK(0),                        // Unlock SharedDB
+            WORK(1),                          // 1ms final computation
+        END_TASK(),
+    };
+
+The framework validates:
+
+1. Bandwidth inheritance prevents deadline misses for interacting tasks
+2. Nested critical sections work correctly with proxy execution
+3. Temporal isolation is maintained for non-interacting tasks
+4. Comprehensive blocking time and contention statistics
+
+Usage:
+
+.. code-block:: bash
+
+    # Enable in kernel config
+    CONFIG_SCHED_MBWI_FRAMEWORK_TEST=y
+    
+    # View current taskset configuration
+    cat /sys/kernel/mbwi_framework/taskset_info
+    
+    # Run test with example taskset
+    echo 1 > /sys/kernel/mbwi_framework/mbwi_framework_test
 
 Debug and Tracing
 =================
@@ -365,6 +429,7 @@ References
 ==========
 
 - Original LTP sched_football test: https://github.com/linux-test-project/ltp/blob/master/testcases/realtime/func/sched_football/sched_football.c
+- M-BWI protocol documentation: ``Documentation/scheduler/m-bwi.txt``
 - Kernel source: ``kernel/sched/core.c``, ``kernel/locking/mutex.c``
-- Test implementation: ``kernel/sched/test_ksched_football.c``
-- Configuration: ``init/Kconfig`` (``CONFIG_SCHED_PROXY_EXEC``)
+- Test implementations: ``kernel/sched/test_ksched_football.c``, ``kernel/sched/test_mbwi_framework.c``
+- Configuration: ``init/Kconfig`` (``CONFIG_SCHED_PROXY_EXEC``), ``lib/Kconfig.debug`` (``CONFIG_SCHED_MBWI_FRAMEWORK_TEST``)

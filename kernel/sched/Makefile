@@ -38,3 +38,4 @@ obj-y += fair.o
 obj-y += build_policy.o
 obj-y += build_utility.o
 obj-$(CONFIG_SCHED_RT_INVARIANT_TEST) += test_ksched_football.o
+obj-$(CONFIG_SCHED_MBWI_FRAMEWORK_TEST) += test_mbwi_framework.o
