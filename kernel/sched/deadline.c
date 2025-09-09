@@ -1449,6 +1449,8 @@ static void update_curr_dl_se(struct rq *rq, struct sched_dl_entity *dl_se, s64 
 
 	dl_se->runtime -= scaled_delta_exec;
 
+	trace_sched_dl_update_tp(dl_se);
+
 	/*
 	 * The fair server can consume its runtime while throttled (not queued/
 	 * running as regular CFS).

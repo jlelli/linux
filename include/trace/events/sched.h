@@ -1191,6 +1191,10 @@ DECLARE_TRACE(sched_dl_server_stop,
 	TP_PROTO(struct sched_dl_entity *dl, bool hard),
 	TP_ARGS(dl, hard));
 
+DECLARE_TRACE(sched_dl_update,
+	TP_PROTO(struct sched_dl_entity *dl),
+	TP_ARGS(dl));
+
 #endif /* _TRACE_SCHED_H */
 
 /* This part must be outside protection */
