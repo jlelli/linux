@@ -18,6 +18,7 @@
  *
  * Also see Documentation/locking/mutex-design.rst.
  */
+#include "linux/sched.h"
 #include <linux/mutex.h>
 #include <linux/ww_mutex.h>
 #include <linux/sched/signal.h>
@@ -599,7 +600,8 @@ __mutex_lock_common(struct mutex *lock, unsigned int state, unsigned int subclas
 
 	trace_contention_begin(lock, LCB_F_MUTEX | LCB_F_SPIN);
 	if (__mutex_trylock(lock) ||
-	    mutex_optimistic_spin(lock, ww_ctx, NULL)) {
+	    (!sched_proxy_exec() &&
+	     mutex_optimistic_spin(lock, ww_ctx, NULL))) {
 		/* got the lock, yay! */
 		lock_acquired(&lock->dep_map, ip);
 		if (ww_ctx)
