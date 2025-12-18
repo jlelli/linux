@@ -11,4 +11,12 @@ LDLIBS += -lpthread
 TEST_GEN_FILES := cs_prctl_test
 TEST_PROGS := cs_prctl_test
 
+# SCHED_DEADLINE tests in subdirectory
+TEST_PROGS += deadline/runner
+TEST_GEN_PROGS_EXTENDED := deadline/cpuhog
+
 include ../lib.mk
+
+# Build deadline tests
+$(OUTPUT)/deadline/runner $(OUTPUT)/deadline/cpuhog:
+	$(MAKE) -C deadline OUTPUT=$(OUTPUT)/deadline/
