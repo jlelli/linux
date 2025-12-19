@@ -99,6 +99,52 @@ int dl_get_server_bandwidth_overhead(void);
  */
 int dl_calc_max_bandwidth_percent(void);
 
+/**
+ * dl_set_rt_bandwidth() - Set RT bandwidth settings
+ * @runtime_us: Runtime in microseconds
+ * @period_us: Period in microseconds
+ *
+ * Writes to /proc/sys/kernel/sched_rt_runtime_us and
+ * /proc/sys/kernel/sched_rt_period_us. Requires root privileges.
+ *
+ * Return: 0 on success, -1 on error
+ */
+int dl_set_rt_bandwidth(uint64_t runtime_us, uint64_t period_us);
+
+/**
+ * dl_get_fair_server_settings() - Read fair_server settings for a CPU
+ * @cpu: CPU number
+ * @runtime_ns: Pointer to store runtime in nanoseconds
+ * @period_ns: Pointer to store period in nanoseconds
+ *
+ * Reads from /sys/kernel/debug/sched/fair_server/cpuN/runtime and period.
+ *
+ * Return: 0 on success, -1 on error (including if fair_server doesn't exist)
+ */
+int dl_get_fair_server_settings(int cpu, uint64_t *runtime_ns,
+				uint64_t *period_ns);
+
+/**
+ * dl_set_fair_server_runtime() - Set fair_server runtime for a CPU
+ * @cpu: CPU number
+ * @runtime_ns: Runtime in nanoseconds
+ *
+ * Writes to /sys/kernel/debug/sched/fair_server/cpuN/runtime.
+ * Requires appropriate permissions.
+ *
+ * Return: 0 on success, -1 on error
+ */
+int dl_set_fair_server_runtime(int cpu, uint64_t runtime_ns);
+
+/**
+ * dl_fair_server_exists() - Check if fair_server interface exists
+ *
+ * Checks if /sys/kernel/debug/sched/fair_server directory exists.
+ *
+ * Return: true if fair_server interface exists, false otherwise
+ */
+bool dl_fair_server_exists(void);
+
 /*
  * Process management
  */
@@ -147,6 +193,17 @@ int dl_find_cpuhogs(pid_t *pids, int max_pids);
  * Return: 0 if process appeared, -1 on timeout
  */
 int dl_wait_for_pid(pid_t pid, int timeout_ms);
+
+/**
+ * dl_get_process_cpu_time() - Get total CPU time for a process
+ * @pid: Process ID
+ *
+ * Reads utime and stime from /proc/<pid>/stat and returns total CPU
+ * time in clock ticks.
+ *
+ * Return: Total CPU ticks used, or 0 on error
+ */
+uint64_t dl_get_process_cpu_time(pid_t pid);
 
 /*
  * CPU topology operations
