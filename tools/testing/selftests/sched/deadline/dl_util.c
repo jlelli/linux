@@ -203,6 +203,80 @@ int dl_calc_max_bandwidth_percent(void)
 	return available_percent > 0 ? available_percent : 1;
 }
 
+static int write_proc_uint64(const char *path, uint64_t value)
+{
+	FILE *f;
+	int ret;
+
+	f = fopen(path, "w");
+	if (!f)
+		return -1;
+
+	ret = fprintf(f, "%lu\n", value);
+	if (ret < 0) {
+		fclose(f);
+		return -1;
+	}
+
+	/* fclose() flushes and may return error if kernel write fails */
+	if (fclose(f) != 0)
+		return -1;
+
+	return 0;
+}
+
+int dl_set_rt_bandwidth(uint64_t runtime_us, uint64_t period_us)
+{
+	int ret;
+
+	ret = write_proc_uint64("/proc/sys/kernel/sched_rt_runtime_us",
+				runtime_us);
+	if (ret < 0)
+		return ret;
+
+	return write_proc_uint64("/proc/sys/kernel/sched_rt_period_us",
+				 period_us);
+}
+
+bool dl_fair_server_exists(void)
+{
+	return access("/sys/kernel/debug/sched/fair_server", F_OK) == 0;
+}
+
+int dl_get_fair_server_settings(int cpu, uint64_t *runtime_ns,
+				 uint64_t *period_ns)
+{
+	char runtime_path[256];
+	char period_path[256];
+	int ret;
+
+	snprintf(runtime_path, sizeof(runtime_path),
+		 "/sys/kernel/debug/sched/fair_server/cpu%d/runtime", cpu);
+
+	ret = read_proc_uint64(runtime_path, runtime_ns);
+	if (ret < 0)
+		return ret;
+
+	/* period_ns is optional */
+	if (period_ns) {
+		snprintf(period_path, sizeof(period_path),
+			 "/sys/kernel/debug/sched/fair_server/cpu%d/period", cpu);
+		return read_proc_uint64(period_path, period_ns);
+	}
+
+	return 0;
+}
+
+int dl_set_fair_server_runtime(int cpu, uint64_t runtime_ns)
+{
+	char path[256];
+
+	snprintf(path, sizeof(path),
+		 "/sys/kernel/debug/sched/fair_server/cpu%d/runtime", cpu);
+
+	return write_proc_uint64(path, runtime_ns);
+}
+
 /*
  * Process management
  */
@@ -319,6 +393,60 @@ int dl_wait_for_pid(pid_t pid, int timeout_ms)
 	}
 
 	return -1;
+}
+
+uint64_t dl_get_process_cpu_time(pid_t pid)
+{
+	char path[256];
+	char line[1024];
+	FILE *f;
+	uint64_t utime = 0, stime = 0;
+	int i;
+	char *p, *token, *saveptr;
+
+	snprintf(path, sizeof(path), "/proc/%d/stat", pid);
+	f = fopen(path, "r");
+	if (!f)
+		return 0;
+
+	if (!fgets(line, sizeof(line), f)) {
+		fclose(f);
+		return 0;
+	}
+
+	fclose(f);
+
+	/*
+	 * Parse /proc/PID/stat format:
+	 * pid (comm) state ppid ... utime stime ...
+	 *
+	 * The comm field (field 2) can contain spaces and is enclosed in
+	 * parentheses. Find the last ')' to skip past it, then parse the
+	 * remaining space-separated fields.
+	 *
+	 * After the closing ')', fields are:
+	 * 1=state 2=ppid 3=pgrp 4=sid 5=tty_nr 6=tty_pgrp 7=flags
+	 * 8=min_flt 9=cmin_flt 10=maj_flt 11=cmaj_flt 12=utime 13=stime
+	 */
+	p = strrchr(line, ')');
+	if (!p)
+		return 0;
+
+	/* Skip past ') ' */
+	p += 2;
+
+	/* Tokenize remaining fields */
+	token = strtok_r(p, " ", &saveptr);
+	for (i = 1; token && i <= 13; i++) {
+		if (i == 12)
+			utime = strtoull(token, NULL, 10);
+		else if (i == 13)
+			stime = strtoull(token, NULL, 10);
+
+		token = strtok_r(NULL, " ", &saveptr);
+	}
+
+	return utime + stime;
 }
 
 /*
