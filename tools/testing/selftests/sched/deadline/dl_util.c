@@ -14,6 +14,8 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <time.h>
+#include <glob.h>
+#include <dirent.h>
 #include "dl_util.h"
 
 /* Syscall numbers for sched_setattr/sched_getattr */
@@ -121,10 +123,65 @@ int dl_get_rt_bandwidth(uint64_t *runtime_us, uint64_t *period_us)
 				period_us);
 }
 
+int dl_get_server_bandwidth_overhead(void)
+{
+	glob_t globbuf;
+	char pattern[512];
+	size_t i;
+	int total_overhead = 0;
+
+	/* Find all *_server directories */
+	snprintf(pattern, sizeof(pattern),
+		 "/sys/kernel/debug/sched/*_server");
+
+	if (glob(pattern, 0, NULL, &globbuf) != 0) {
+		/* No servers found - not an error, just no overhead */
+		return 0;
+	}
+
+	/*
+	 * Sum overhead from cpu0 across all servers.
+	 * Assumes symmetric system where all CPUs have identical server
+	 * configuration. Reading only cpu0 represents the per-CPU overhead.
+	 */
+	for (i = 0; i < globbuf.gl_pathc; i++) {
+		char runtime_path[512];
+		char period_path[512];
+		char *server_path = globbuf.gl_pathv[i];
+		uint64_t runtime_ns = 0, period_ns = 0;
+		int percent;
+
+		/* Build paths to cpu0 runtime and period files */
+		snprintf(runtime_path, sizeof(runtime_path),
+			 "%s/cpu0/runtime", server_path);
+		snprintf(period_path, sizeof(period_path),
+			 "%s/cpu0/period", server_path);
+
+		/* Read runtime and period for cpu0 */
+		if (read_proc_uint64(runtime_path, &runtime_ns) < 0)
+			continue;
+		if (read_proc_uint64(period_path, &period_ns) < 0)
+			continue;
+
+		if (period_ns == 0)
+			continue;
+
+		/* Calculate percentage for this server */
+		percent = (runtime_ns * 100) / period_ns;
+
+		/* Accumulate overhead from all servers */
+		total_overhead += percent;
+	}
+
+	globfree(&globbuf);
+	return total_overhead;
+}
+
 int dl_calc_max_bandwidth_percent(void)
 {
 	uint64_t runtime_us, period_us;
-	int percent;
+	int rt_percent, server_overhead;
+	int available_percent;
 
 	if (dl_get_rt_bandwidth(&runtime_us, &period_us) < 0)
 		return -1;
@@ -132,8 +189,18 @@ int dl_calc_max_bandwidth_percent(void)
 	if (period_us == 0)
 		return -1;
 
-	percent = (runtime_us * 100) / period_us;
-	return percent > 0 ? percent : 1;
+	/* Calculate RT bandwidth percentage */
+	rt_percent = (runtime_us * 100) / period_us;
+
+	/* Get server overhead */
+	server_overhead = dl_get_server_bandwidth_overhead();
+	if (server_overhead < 0)
+		server_overhead = 0;
+
+	/* Available bandwidth = RT bandwidth - server overhead */
+	available_percent = rt_percent - server_overhead;
+
+	return available_percent > 0 ? available_percent : 1;
 }
 
 /*
