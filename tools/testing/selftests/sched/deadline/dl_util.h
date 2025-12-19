@@ -80,10 +80,20 @@ bool dl_is_deadline_task(pid_t pid);
 int dl_get_rt_bandwidth(uint64_t *runtime_us, uint64_t *period_us);
 
 /**
+ * dl_get_server_bandwidth_overhead() - Calculate total DL server overhead per CPU
+ *
+ * Scans /sys/kernel/debug/sched/ for server directories (fair_server, etc.) and
+ * calculates the total bandwidth reserved by all DL servers per CPU.
+ *
+ * Return: Bandwidth percentage overhead per CPU (0-100), or -1 on error
+ */
+int dl_get_server_bandwidth_overhead(void);
+
+/**
  * dl_calc_max_bandwidth_percent() - Calculate available bandwidth percentage
  *
  * Calculates the maximum bandwidth available per CPU as a percentage,
- * based on RT bandwidth settings.
+ * based on RT bandwidth settings minus DL server overhead (fair_server, etc.).
  *
  * Return: Bandwidth percentage (0-100), or -1 on error
  */
