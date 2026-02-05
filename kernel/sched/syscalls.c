@@ -7,6 +7,7 @@
  *  Copyright (C) 1991-2002  Linus Torvalds
  *  Copyright (C) 1998-2024  Ingo Molnar, Red Hat
  */
+#include "linux/sched/rt.h"
 #include <linux/sched.h>
 #include <linux/cpuset.h>
 #include <linux/sched/debug.h>
@@ -283,6 +284,33 @@ static bool check_same_owner(struct task_struct *p)
 	return (uid_eq(cred->euid, pcred->euid) ||
 		uid_eq(cred->euid, pcred->uid));
 }
+
+#ifdef CONFIG_RT_MUTEXES
+static void __setscheduler_dl(struct task_struct *p,
+			      struct sched_change_ctx *scope)
+{
+	struct task_struct *pi_task = rt_mutex_get_top_task(p);
+
+	/*
+	 * In case a former DEADLINE task (either proper or boosted) gets
+	 * setscheduled to a lower priority class, check if it neeeds to
+	 * inherit parameters from a potential pi_task. In that case make
+	 * sure replenishment happens with the next enqueue.
+	 */
+	if (!dl_prio(p->normal_prio) &&
+	    (pi_task && dl_prio(pi_task->prio))) {
+		p->dl.pi_se = pi_task->dl.pi_se;
+
+		if (scope && scope->queued)
+			scope->flags |= ENQUEUE_REPLENISH;
+	}
+}
+#else /* !CONFIG_RT_MUTEXES */
+static void __setscheduler_dl(struct task_struct *p,
+			      struct sched_change_ctx *scope)
+{
+}
+#endif /* !CONFIG_RT_MUTEXES */
 
 #ifdef CONFIG_UCLAMP_TASK
 
@@ -657,6 +685,7 @@ change:
 			p->prio = newprio;
 		}
 		__setscheduler_uclamp(p, attr);
+		__setscheduler_dl(p, scope);
 
 		if (scope->queued) {
 			/*
