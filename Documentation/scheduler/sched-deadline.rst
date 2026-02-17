@@ -9,6 +9,8 @@ Deadline Task Scheduling
     2. Scheduling algorithm
       2.1 Main algorithm
       2.2 Bandwidth reclaiming
+      2.3 Energy-aware scheduling
+      2.4 Deadline task demotion
     3. Scheduling Real-Time Tasks
       3.1 Definitions
       3.2 Schedulability Analysis for Uniprocessor Systems
@@ -298,6 +300,58 @@ Deadline Task Scheduling
  A particular care must be taken in case the time needed for changing frequency
  is of the same order of magnitude of the reservation period. In such cases,
  setting a fixed CPU frequency results in a lower amount of deadline misses.
+
+
+2.4 Deadline task demotion
+---------------------------
+
+ The SCHED_FLAG_DL_DEMOTION flag enables an alternative behavior when a
+ SCHED_DEADLINE task exhausts its runtime budget. Instead of being throttled
+ until its next period (as described in Section 2.1), a task with this flag
+ set is temporarily "demoted" to run as SCHED_NORMAL, allowing it to continue
+ execution while competing with other normal tasks. When the replenishment
+ timer fires at the next period, the task is automatically "promoted" back to
+ SCHED_DEADLINE with its runtime budget replenished.
+
+ This mechanism is useful for soft real-time workloads that need timing
+ guarantees most of the time but can gracefully degrade to best-effort
+ execution when they occasionally overrun their reservation, rather than
+ being completely suspended until the next period.
+
+ State transitions and behavior:
+
+  - **Demotion**: When a task with SCHED_FLAG_DL_DEMOTION exhausts its runtime
+    (remaining runtime <= 0), it is immediately switched to SCHED_NORMAL policy
+    and continues executing as a normal task. Its bandwidth reservation remains
+    in place - the task still "owns" its reserved bandwidth even while running
+    as SCHED_NORMAL.
+
+  - **Promotion**: When the replenishment timer fires (at the next period), the
+    task is automatically switched back to SCHED_DEADLINE policy with its
+    runtime budget replenished. The task then resumes real-time execution.
+
+  - **Migration restriction**: While demoted, a task cannot migrate to other
+    CPUs through the normal load balancer. This simplifies bandwidth accounting
+    by ensuring the reservation stays on the original CPU. Migration is
+    re-enabled after promotion or if the task's scheduling parameters are
+    explicitly changed.
+
+ Example usage::
+
+    struct sched_attr attr;
+    attr.size = sizeof(attr);
+    attr.sched_policy = SCHED_DEADLINE;
+    attr.sched_runtime = 10 * 1000 * 1000;   /* 10ms */
+    attr.sched_deadline = 100 * 1000 * 1000; /* 100ms */
+    attr.sched_period = 100 * 1000 * 1000;   /* 100ms */
+    attr.sched_flags = SCHED_FLAG_DL_DEMOTION;
+    attr.sched_nice = 0;  /* Nice value when demoted */
+
+    sched_setattr(pid, &attr, 0);
+
+ When this task exhausts its 10ms budget within a period, it will be demoted
+ to SCHED_NORMAL (with nice value 0) rather than being throttled. It will be
+ promoted back to SCHED_DEADLINE at the start of the next period.
 
 
 3. Scheduling Real-Time Tasks
