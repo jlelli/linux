@@ -1,0 +1,83 @@
+SCHED_DEADLINE Demotion Tests
+==============================
+
+This test verifies the SCHED_FLAG_DL_DEMOTION feature which allows DEADLINE
+tasks to be demoted to SCHED_NORMAL when they exhaust their runtime budget.
+
+Building
+--------
+  make -C tools/testing/selftests/sched
+
+Running
+-------
+Requires root or CAP_SYS_NICE:
+
+  sudo ./tools/testing/selftests/sched/dl_demotion_test
+
+Or via kselftest framework:
+
+  sudo make -C tools/testing/selftests TARGETS=sched run_tests
+
+Tests
+-----
+
+Test 1: Basic demotion on runtime exhaustion
+  - Creates a DEADLINE task with SCHED_FLAG_DL_DEMOTION
+  - Runs until runtime is exhausted
+  - Verifies task is demoted to SCHED_NORMAL
+
+Test 2: Promotion on replenishment timer
+  - Gets demoted by exhausting runtime
+  - Waits for period to expire
+  - Verifies task is promoted back to SCHED_DEADLINE
+
+Test 3: Explicit parameter change while demoted
+  - Gets demoted
+  - Explicitly changes scheduling parameters
+  - Verifies demotion state is cleared (no automatic promotion)
+
+Test 4: No demotion without flag
+  - Creates DEADLINE task WITHOUT demotion flag
+  - Exhausts runtime
+  - Verifies task remains SCHED_DEADLINE (throttled but not demoted)
+
+Stress Test
+-----------
+The dl_demotion_stress test creates multiple threads that repeatedly go through
+demotion/promotion cycles. This is useful for stress testing the feature,
+especially migration scenarios.
+
+  sudo ./tools/testing/selftests/sched/dl_demotion_stress [threads] [duration]
+
+Arguments:
+  threads  - Number of worker threads (1-32, default: 4)
+  duration - Run duration in seconds (default: 10)
+
+Example:
+  sudo ./tools/testing/selftests/sched/dl_demotion_stress 8 30
+
+This test is NOT part of the automated test suite (not in TEST_PROGS) and
+must be run manually.
+
+Debugging
+---------
+To see the demotion/promotion state machine transitions, enable ftrace:
+
+  sudo su
+  cd /sys/kernel/debug/tracing
+  echo 1 > events/sched/enable
+  echo 1 > options/trace_printk
+  echo 1 > tracing_on
+
+Then run the test and check the trace:
+
+  cat trace
+
+Look for trace_printk messages showing state transitions:
+  - dl_demote: ... state: NOT_DEMOTED->DEMOTING
+  - dl_demote: ... state: DEMOTING->DEMOTED
+  - dl_promote: ... state: DEMOTED->PROMOTING
+  - dl_promote: ... state: PROMOTING->NOT_DEMOTED
+  - dl_timer: ... migrated_while_runnable/sleeping
+  - switched_from_dl: ... skip_bw_accounting
+  - switched_to_dl: ... skip_bw_accounting
