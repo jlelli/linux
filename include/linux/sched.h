@@ -696,6 +696,15 @@ struct sched_dl_entity {
 	 * running, skipping the defer phase.
 	 *
 	 * @dl_defer_idle tracks idle state
+	 *
+	 * @dl_demotion_state tracks the demotion state machine:
+	 *   DL_NOT_DEMOTED (0): Normal SCHED_DEADLINE execution
+	 *   DL_DEMOTING (1): Transition in progress (DL -> NORMAL), skip bw removal
+	 *   DL_DEMOTED (2): Running as SCHED_NORMAL, bandwidth still reserved
+	 *   DL_PROMOTING (3): Transition in progress (NORMAL -> DL), skip bw addition
+	 *
+	 * Demoted tasks cannot migrate (enforced by dl_task_can_migrate()), so
+	 * bandwidth reservation always stays on the current CPU.
 	 */
 	unsigned int			dl_throttled      : 1;
 	unsigned int			dl_yielded        : 1;
@@ -707,6 +716,7 @@ struct sched_dl_entity {
 	unsigned int			dl_defer_armed	  : 1;
 	unsigned int			dl_defer_running  : 1;
 	unsigned int			dl_defer_idle     : 1;
+	unsigned int			dl_demotion_state : 2;
 
 	/*
 	 * Bandwidth enforcement timer. Each -deadline task has its
