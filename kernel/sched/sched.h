@@ -268,6 +268,16 @@ static inline unsigned long sched_weight_to_cgroup(unsigned long weight)
 }
 
 /*
+ * Deadline task demotion states
+ */
+enum dl_demotion_state {
+	DL_NOT_DEMOTED = 0,	/* Normal SCHED_DEADLINE execution */
+	DL_DEMOTING,		/* Transitioning DL -> NORMAL, skip bw removal */
+	DL_DEMOTED,		/* Running as SCHED_NORMAL, bw still reserved */
+	DL_PROMOTING,		/* Transitioning NORMAL -> DL, skip bw addition */
+};
+
+/*
  * !! For sched_setattr_nocheck() (kernel) only !!
  *
  * This is actually gross. :(
@@ -281,7 +291,8 @@ static inline unsigned long sched_weight_to_cgroup(unsigned long weight)
  */
 #define SCHED_FLAG_SUGOV	0x10000000
 
-#define SCHED_DL_FLAGS		(SCHED_FLAG_RECLAIM | SCHED_FLAG_DL_OVERRUN | SCHED_FLAG_SUGOV)
+#define SCHED_DL_FLAGS		(SCHED_FLAG_RECLAIM | SCHED_FLAG_DL_OVERRUN | \
+				 SCHED_FLAG_SUGOV | SCHED_FLAG_DL_DEMOTION)
 
 static inline bool dl_entity_is_special(const struct sched_dl_entity *dl_se)
 {
@@ -356,6 +367,8 @@ extern void __setparam_dl(struct task_struct *p, const struct sched_attr *attr);
 extern void __getparam_dl(struct task_struct *p, struct sched_attr *attr);
 extern bool __checkparam_dl(const struct sched_attr *attr);
 extern bool dl_param_changed(struct task_struct *p, const struct sched_attr *attr);
+extern bool dl_task_can_migrate(struct task_struct *p);
+extern void dl_cancel_demotion(struct task_struct *p);
 extern int  dl_cpuset_cpumask_can_shrink(const struct cpumask *cur, const struct cpumask *trial);
 extern int  dl_bw_deactivate(int cpu);
 extern s64 dl_scaled_delta_exec(struct rq *rq, struct sched_dl_entity *dl_se, s64 delta_exec);

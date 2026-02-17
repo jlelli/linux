@@ -1204,6 +1204,9 @@ static enum hrtimer_restart dl_server_timer(struct hrtimer *timer, struct sched_
 	return HRTIMER_NORESTART;
 }
 
+static void
+dl_task_promote(struct rq *rq, struct task_struct *p);
+
 /*
  * This is the bandwidth enforcement timer callback. If here, we know
  * a task is not on its dl_rq, since the fact that the timer was running
@@ -1236,7 +1239,7 @@ static enum hrtimer_restart dl_task_timer(struct hrtimer *timer)
 	 * The task might have changed its scheduling policy to something
 	 * different than SCHED_DEADLINE (through switched_from_dl()).
 	 */
-	if (!dl_task(p))
+	if (!dl_task(p) && dl_se->dl_demotion_state == DL_NOT_DEMOTED)
 		goto unlock;
 
 	/*
@@ -1255,6 +1258,27 @@ static enum hrtimer_restart dl_task_timer(struct hrtimer *timer)
 
 	sched_clock_tick();
 	update_rq_clock(rq);
+
+	/*
+	 * If the task was demoted to SCHED_OTHER, promote it back to
+	 * SCHED_DEADLINE now that it's going to be replenished.
+	 *
+	 * Note: Demoted tasks cannot migrate (enforced by dl_task_can_migrate),
+	 * so bandwidth is guaranteed to still be on this CPU.
+	 */
+	if (dl_se->dl_demotion_state == DL_DEMOTED) {
+		/*
+		 * We're at 0-lag time by definition (replenish). The task went
+		 * to sleep as SCHED_NORMAL, so task_non_contending() was never
+		 * called and running_bw was never removed. Remove it now so that
+		 * when the task wakes up as DEADLINE, the normal enqueue path
+		 * can add it back.
+		 */
+		if (!task_on_rq_queued(p))
+			sub_running_bw(dl_se, &rq->dl);
+
+		dl_task_promote(rq, p);
+	}
 
 	/*
 	 * If the throttle happened during sched-out; like:
@@ -1293,6 +1317,7 @@ static enum hrtimer_restart dl_task_timer(struct hrtimer *timer)
 	}
 
 	enqueue_task_dl(rq, p, ENQUEUE_REPLENISH);
+
 	if (dl_task(rq->donor))
 		wakeup_preempt_dl(rq, p, 0);
 	else
@@ -1419,6 +1444,84 @@ s64 dl_scaled_delta_exec(struct rq *rq, struct sched_dl_entity *dl_se, s64 delta
 	return scaled_delta_exec;
 }
 
+/*
+ * Check if a deadline task can be demoted when it exhausts its runtime.
+ * dl-servers and boosted tasks cannot be demoted.
+ *
+ * Returns true if demotion should happen, false otherwise.
+ */
+static inline bool dl_task_can_demote(struct sched_dl_entity *dl_se)
+{
+	if (dl_server(dl_se))
+		return false;
+
+	if (is_dl_boosted(dl_se))
+		return false;
+
+	return !!(dl_se->flags & SCHED_FLAG_DL_DEMOTION);
+}
+
+/*
+ * Promote a demoted task back to SCHED_DEADLINE.
+ * The task's runtime will be replenished by the caller.
+ */
+static void dl_task_promote(struct rq *rq, struct task_struct *p)
+{
+	struct sched_dl_entity *dl_se = &p->dl;
+	int queue_flags = DEQUEUE_MOVE | DEQUEUE_NOCLOCK | DEQUEUE_CLASS;
+
+	lockdep_assert_rq_held(rq);
+
+	if (dl_se->dl_demotion_state != DL_DEMOTED)
+		return;
+
+	dl_se->dl_demotion_state = DL_PROMOTING;
+
+	scoped_guard (sched_change, p, queue_flags) {
+		p->policy = SCHED_DEADLINE;
+		p->sched_class = &dl_sched_class;
+		p->prio = MAX_DL_PRIO - 1;
+		p->normal_prio = p->prio;
+	}
+
+	dl_se->dl_demotion_state = DL_NOT_DEMOTED;
+
+	__balance_callbacks(rq, NULL);
+}
+
+/*
+ * Demote a deadline task to SCHED_OTHER when it exhausts its runtime.
+ * The task will be promoted back to SCHED_DEADLINE at replenish.
+ */
+static void dl_task_demote(struct rq *rq, struct task_struct *p)
+{
+	struct sched_dl_entity *dl_se = &p->dl;
+	int queue_flags = DEQUEUE_MOVE | DEQUEUE_NOCLOCK | DEQUEUE_CLASS;
+
+	lockdep_assert_rq_held(rq);
+
+	if (dl_se->dl_demotion_state != DL_NOT_DEMOTED || !dl_task_can_demote(dl_se))
+		return;
+
+	dl_se->dl_demotion_state = DL_DEMOTING;
+
+	scoped_guard (sched_change, p, queue_flags) {
+		/*
+		 * The task's static_prio is already set from the sched_nice
+		 * value in sched_attr.
+		 */
+		p->policy = SCHED_NORMAL;
+		p->sched_class = &fair_sched_class;
+		p->prio = p->static_prio;
+		p->normal_prio = p->static_prio;
+	}
+
+	dl_se->dl_demotion_state = DL_DEMOTED;
+
+	__balance_callbacks(rq, NULL);
+	resched_curr(rq);
+}
+
 static inline void
 update_stats_dequeue_dl(struct dl_rq *dl_rq, struct sched_dl_entity *dl_se, int flags);
 
@@ -1521,11 +1624,36 @@ throttle:
 			dequeue_pushable_dl_task(rq, dl_task_of(dl_se));
 		}
 
+		/*
+		 * Check if we should demote to SCHED_OTHER instead of throttling.
+		 * Demotion only applies to non-dl-server non-pi-boosted tasks
+		 * that have exhausted their runtime (not yielded).
+		 */
+		if (!dl_server(dl_se) && dl_runtime_exceeded(dl_se) &&
+		    dl_task_can_demote(dl_se))
+			dl_task_demote(rq, dl_task_of(dl_se));
+
+		/*
+		 * Start the replenishment timer for both demoted and throttled tasks.
+		 * If boosted or if the timer fails to start, we need to handle it
+		 * immediately to avoid leaving tasks stuck.
+		 */
 		if (unlikely(is_dl_boosted(dl_se) || !start_dl_timer(dl_se))) {
+			/*
+			 * If this was a demoted task, promote it back to SCHED_DEADLINE
+			 * before enqueueing.
+			 */
+			if (dl_se->dl_demotion_state == DL_DEMOTED)
+				dl_task_promote(rq, dl_task_of(dl_se));
+
 			if (dl_server(dl_se)) {
 				replenish_dl_new_period(dl_se, rq);
 				start_dl_timer(dl_se);
 			} else {
+				/*
+				 * For regular tasks (including previously demoted ones),
+				 * enqueue with replenishment.
+				 */
 				enqueue_task_dl(rq, dl_task_of(dl_se), ENQUEUE_REPLENISH);
 			}
 		}
@@ -3266,8 +3394,17 @@ void dl_clear_root_domain_cpu(int cpu)
 	dl_clear_root_domain(cpu_rq(cpu)->rd);
 }
 
-static void switched_from_dl(struct rq *rq, struct task_struct *p)
+/*
+ * Common cleanup when a task leaves SCHED_DEADLINE.
+ * Handles inactive timer, cpuset tracking, and bandwidth accounting.
+ *
+ * This is used both when a task is explicitly switched away from DEADLINE
+ * and when a demoted task's demotion is cancelled via sched_setattr().
+ */
+static void __dl_cleanup_bandwidth(struct task_struct *p, struct rq *rq)
 {
+	lockdep_assert_rq_held(rq);
+
 	/*
 	 * task_non_contending() can start the "inactive timer" (if the 0-lag
 	 * time is in the future). If the task switches back to dl before
@@ -3304,6 +3441,18 @@ static void switched_from_dl(struct rq *rq, struct task_struct *p)
 	 */
 	if (p->dl.dl_non_contending)
 		p->dl.dl_non_contending = 0;
+}
+
+static void switched_from_dl(struct rq *rq, struct task_struct *p)
+{
+	/*
+	 * If demoting, skip all bandwidth accounting. The bandwidth
+	 * reservation stays in place while the task executes as SCHED_NORMAL.
+	 */
+	if (p->dl.dl_demotion_state == DL_DEMOTING)
+		return;
+
+	__dl_cleanup_bandwidth(p, rq);
 
 	/*
 	 * Since this might be the only -deadline task on the rq,
@@ -3322,6 +3471,16 @@ static void switched_from_dl(struct rq *rq, struct task_struct *p)
  */
 static void switched_to_dl(struct rq *rq, struct task_struct *p)
 {
+	/*
+	 * If promoting from demotion, skip bandwidth/cpuset accounting.
+	 */
+	if (p->dl.dl_demotion_state == DL_PROMOTING) {
+		if (!task_on_rq_queued(p))
+			return;
+
+		goto check_preempt;
+	}
+
 	cancel_inactive_timer(&p->dl);
 
 	/*
@@ -3337,6 +3496,7 @@ static void switched_to_dl(struct rq *rq, struct task_struct *p)
 		return;
 	}
 
+check_preempt:
 	if (rq->donor != p) {
 		if (p->nr_cpus_allowed > 1 && rq->dl.overloaded)
 			deadline_queue_push_tasks(rq);
@@ -3626,6 +3786,47 @@ void __getparam_dl(struct task_struct *p, struct sched_attr *attr)
 }
 
 /*
+ * Check if a task can be migrated from DEADLINE perspective.
+ *
+ * Returns false if the task is a demoted DEADLINE task. Demoted tasks
+ * must stay on their demotion CPU because their bandwidth reservation
+ * is tied to that CPU. Migration will be allowed again after promotion.
+ */
+bool dl_task_can_migrate(struct task_struct *p)
+{
+	return p->dl.dl_demotion_state != DL_DEMOTED;
+}
+
+/*
+ * Cancel demotion for a demoted DEADLINE task when scheduling parameters
+ * are explicitly changed via sched_setattr().
+ *
+ * This performs the same cleanup as switched_from_dl() would do, releasing
+ * bandwidth reservation and clearing all DEADLINE-related state.
+ *
+ * The replenishment timer (dl_timer) is not cancelled - when it fires it will
+ * see the task is not DEADLINE and demotion state is cleared, and return early.
+ */
+void dl_cancel_demotion(struct task_struct *p)
+{
+	struct sched_dl_entity *dl_se = &p->dl;
+	struct rq *rq = task_rq(p);
+
+	lockdep_assert_rq_held(rq);
+
+	if (dl_se->dl_demotion_state != DL_DEMOTED)
+		return;
+
+	/*
+	 * Clear demotion state before cleanup. This allows the replenishment
+	 * timer to safely ignore the task when it fires.
+	 */
+	dl_se->dl_demotion_state = DL_NOT_DEMOTED;
+
+	__dl_cleanup_bandwidth(p, rq);
+}
+
+/*
  * This function validates the new parameters of a -deadline task.
  * We ask for the deadline not being zero, and greater or equal
  * than the runtime, as well as the period of being zero or
@@ -3675,6 +3876,14 @@ bool __checkparam_dl(const struct sched_attr *attr)
 	min = (u64)READ_ONCE(sysctl_sched_dl_period_min) * NSEC_PER_USEC;
 
 	if (period < min || period > max)
+		return false;
+
+	/*
+	 * Validate nice parameter if demotion flag is set.
+	 * The sched_nice value will be used when the task is demoted to SCHED_OTHER.
+	 */
+	if ((attr->sched_flags & SCHED_FLAG_DL_DEMOTION) &&
+	    (attr->sched_nice < MIN_NICE || attr->sched_nice > MAX_NICE))
 		return false;
 
 	return true;

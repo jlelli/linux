@@ -94,6 +94,14 @@
  * scheduled on a CPU with no more capacity than the specified value.
  *
  * A task utilization boundary can be reset by setting the attribute to -1.
+ *
+ * SCHED_DEADLINE Demotion
+ * ========================
+ *
+ * When a SCHED_DEADLINE task exhausts its runtime and SCHED_FLAG_DL_DEMOTION
+ * is set, the task is demoted to SCHED_OTHER to continue executing at lower
+ * priority. The sched_nice value specifies the nice level when demoted.
+ * The task is automatically promoted back to SCHED_DEADLINE at replenish.
  */
 struct sched_attr {
 	__u32 size;

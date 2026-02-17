@@ -9416,6 +9416,14 @@ int can_migrate_task(struct task_struct *p, struct lb_env *env)
 		p->sched_task_hot = 0;
 
 	/*
+	 * Demoted DEADLINE tasks cannot migrate. Their bandwidth reservation
+	 * is tied to the demotion CPU and will be released when the task is
+	 * promoted back to DEADLINE or explicitly switched to another policy.
+	 */
+	if (!dl_task_can_migrate(p))
+		return 0;
+
+	/*
 	 * We do not migrate tasks that are:
 	 * 1) delayed dequeued unless we migrate load, or
 	 * 2) target cfs_rq is in throttled hierarchy, or
