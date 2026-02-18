@@ -8,7 +8,7 @@ CFLAGS += -O2 -Wall -g -I./ $(KHDR_INCLUDES) -Wl,-rpath=./ \
 	  $(CLANG_FLAGS)
 LDLIBS += -lpthread
 
-TEST_GEN_FILES := cs_prctl_test dl_demotion_test dl_demotion_stress
-TEST_PROGS := cs_prctl_test dl_demotion_test
+TEST_GEN_FILES := cs_prctl_test dl_demotion_test dl_demotion_stress dl_demotion_demo
+TEST_PROGS := cs_prctl_test dl_demotion_test dl_demotion_demo
 
 include ../lib.mk
