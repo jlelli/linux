@@ -1458,7 +1458,7 @@ static inline bool dl_task_can_demote(struct sched_dl_entity *dl_se)
 	if (is_dl_boosted(dl_se))
 		return false;
 
-	return !!(dl_se->flags & SCHED_FLAG_DL_DEMOTION);
+	return dl_se->flags & SCHED_FLAG_DL_DEMOTION;
 }
 
 /*
@@ -1519,7 +1519,6 @@ static void dl_task_demote(struct rq *rq, struct task_struct *p)
 	dl_se->dl_demotion_state = DL_DEMOTED;
 
 	__balance_callbacks(rq, NULL);
-	resched_curr(rq);
 }
 
 static inline void
