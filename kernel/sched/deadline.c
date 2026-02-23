@@ -1268,13 +1268,22 @@ static enum hrtimer_restart dl_task_timer(struct hrtimer *timer)
 	 */
 	if (dl_se->dl_demotion_state == DL_DEMOTED) {
 		/*
-		 * We're at 0-lag time by definition (replenish). The task went
-		 * to sleep as SCHED_NORMAL, so task_non_contending() was never
-		 * called and running_bw was never removed. Remove it now so that
-		 * when the task wakes up as DEADLINE, the normal enqueue path
-		 * can add it back.
+		 * We're at 0-lag time by definition (replenish). If the task is
+		 * sleeping, we need to handle running_bw carefully:
+		 *
+		 * - If dl_non_contending=0: The task went to sleep as SCHED_NORMAL
+		 *   after demotion, so task_non_contending() was never called and
+		 *   running_bw was never removed. Remove it now.
+		 *
+		 * - If dl_non_contending=1: The task went to sleep as DEADLINE
+		 *   (before demotion), so task_non_contending() was called and
+		 *   the inactive timer is armed. Let that timer handle the
+		 *   running_bw removal to avoid double subtraction.
+		 *
+		 * After promotion, when the task wakes up as DEADLINE, the normal
+		 * enqueue path will add running_bw back.
 		 */
-		if (!task_on_rq_queued(p))
+		if (!task_on_rq_queued(p) && !dl_se->dl_non_contending)
 			sub_running_bw(dl_se, &rq->dl);
 
 		dl_task_promote(rq, p);
