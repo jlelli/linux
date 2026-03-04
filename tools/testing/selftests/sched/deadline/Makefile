@@ -14,7 +14,7 @@ OUTPUT_DIR := $(OUTPUT)
 UTIL_OBJS := $(OUTPUT)/dl_util.o
 
 # Test object files (all .c files except runner.c, dl_util.c, cpuhog.c)
-TEST_OBJS := $(OUTPUT)/basic.o $(OUTPUT)/bandwidth.o $(OUTPUT)/fair_server.o
+TEST_OBJS := $(OUTPUT)/basic.o $(OUTPUT)/bandwidth.o $(OUTPUT)/fair_server.o $(OUTPUT)/replenish_bug.o
 
 # Runner binary links utility and test objects
 $(OUTPUT)/runner: runner.c $(UTIL_OBJS) $(TEST_OBJS) dl_test.h | $(OUTPUT_DIR)
@@ -36,6 +36,9 @@ $(OUTPUT)/bandwidth.o: bandwidth.c dl_test.h dl_util.h | $(OUTPUT_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(OUTPUT)/fair_server.o: fair_server.c dl_test.h dl_util.h | $(OUTPUT_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OUTPUT)/replenish_bug.o: replenish_bug.c dl_test.h dl_util.h | $(OUTPUT_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(OUTPUT_DIR):
