@@ -3548,11 +3548,21 @@ static void switched_from_dl(struct rq *rq, struct task_struct *p)
 			 * DEADLINE or the timer already fired while still
 			 * DEADLINE (only dropping running_bw at that time).
 			 * Nobody else will release total_bw, do it now.
+			 *
+			 * task_cpu(p) may be stale after CPU hotplug (the
+			 * CPU was offlined and moved to def_root_domain).
+			 * Use the task's cpumask to find an active CPU in
+			 * the root domain where the bandwidth actually is.
 			 */
-			struct dl_bw *dl_b = dl_bw_of(task_cpu(p));
+			unsigned int cpu;
+			struct dl_bw *dl_b;
+
+			cpu = cpumask_first_and(p->cpus_ptr, cpu_active_mask);
+			BUG_ON(cpu >= nr_cpu_ids);
+			dl_b = &cpu_rq(cpu)->rd->dl_bw;
 
 			raw_spin_lock(&dl_b->lock);
-			__dl_sub(dl_b, p->dl.dl_bw, dl_bw_cpus(task_cpu(p)));
+			__dl_sub(dl_b, p->dl.dl_bw, dl_bw_cpus(cpu));
 			raw_spin_unlock(&dl_b->lock);
 		}
 		sub_rq_bw(&p->dl, &rq->dl);
